@@ -1,0 +1,13 @@
+# Fluid (water) properties, per the reference report (~25 °C clean water).
+
+water_25C:
+  label: "Water @ 25 degC"
+  density: 997.0          # kg/m^3
+  viscosity: 1.0e-3        # Pa.s (dynamic viscosity)
+  ambient_temp_K: 298.15   # reference temperature for exergy analysis
+
+water_15C:
+  label: "Water @ 15 degC (cooler supply)"
+  density: 999.1
+  viscosity: 1.139e-3
+  ambient_temp_K: 288.15

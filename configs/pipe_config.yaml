@@ -1,0 +1,25 @@
+# Pipe geometry configurations, based on the comparison cases in the
+# reference report (½" vs 4" distribution pipes).
+#
+# All lengths/diameters in metres; roughness in metres.
+
+pipes:
+  half_inch:
+    label: "1/2 inch PVC"
+    diameter_m: 0.0127        # 1/2" nominal internal diameter (approx.)
+    length_m: 100.0
+    roughness_m: 1.5e-6       # PVC absolute roughness
+
+  four_inch:
+    label: "4 inch PVC"
+    diameter_m: 0.1016        # 4" nominal internal diameter (approx.)
+    length_m: 100.0
+    roughness_m: 1.5e-6
+
+# Common fittings count, applied identically to both pipes for a fair
+# head-loss comparison. Names must match src/hydraulics/head_loss.py::K_FACTORS.
+fittings:
+  elbow_90_standard: 4
+  gate_valve_open: 1
+  entrance_sharp: 1
+  exit: 1

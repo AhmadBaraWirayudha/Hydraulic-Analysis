@@ -1,0 +1,41 @@
+# Simulation scenario parameters: which pipe + fluid combinations to run,
+# pump/motor efficiency assumptions, and Monte Carlo / sensitivity settings.
+
+scenarios:
+  - name: "half_inch_baseline"
+    pipe: half_inch
+    fluid: water_25C
+    flow_rate_m3s: 0.0005     # 0.5 L/s — example residential demand
+    eta_pump: 0.75
+    eta_motor: 0.90
+    rated_power_W: 750.0      # deliberately undersized vs. required ~992 W,
+                              # to demonstrate the Muri (overburden) check
+
+  - name: "four_inch_baseline"
+    pipe: four_inch
+    fluid: water_25C
+    flow_rate_m3s: 0.0005
+    eta_pump: 0.75
+    eta_motor: 0.90
+    rated_power_W: 1.0       # comfortably oversized vs. required <0.1 W
+
+monte_carlo:
+  n_samples: 2000
+  seed: 42
+  uncertainties:
+    - name: flow_rate_m3s
+      dist: triangular
+      params: { low: 0.0003, mode: 0.0005, high: 0.0009 }
+    - name: roughness_m
+      dist: uniform
+      params: { low: 1.0e-6, high: 3.0e-6 }
+
+sensitivity:
+  diameter_m:
+    low: 0.0127
+    high: 0.1016
+    n_points: 15
+  flow_rate_m3s:
+    low: 0.0001
+    high: 0.0020
+    n_points: 15
