@@ -40,6 +40,11 @@ col8.metric("Exergy Destroyed", f"{result.exergy.exergy_destruction_W:.2f} W")
 
 if result.velocity_warning:
     st.warning(result.velocity_warning)
+if result.pump_load_warning:
+    if "overloaded" in result.pump_load_warning.lower():
+        st.error(result.pump_load_warning)
+    else:
+        st.warning(result.pump_load_warning)
 
 st.divider()
 
@@ -60,6 +65,24 @@ if result.head_loss.fittings:
     )
 
 st.divider()
+
+# ── NPSH (cavitation) ─────────────────────────────────────────────────────────
+if result.npsh is not None:
+    st.subheader("NPSH (Cavitation Check)")
+    nc1, nc2, nc3 = st.columns(3)
+    nc1.metric("NPSH Available", f"{result.npsh.npsh_available_m:.2f} m")
+    if result.npsh.npsh_required_m is not None:
+        nc2.metric("NPSH Required", f"{result.npsh.npsh_required_m:.2f} m")
+        nc3.metric("Margin", f"{result.npsh.margin_ratio*100:.0f}%",
+                   delta=f"{result.npsh.margin_m:+.2f} m")
+    if result.npsh_warning:
+        if "cavitation" in result.npsh_warning.lower():
+            st.error(result.npsh_warning)
+        else:
+            st.warning(result.npsh_warning)
+    elif result.npsh.npsh_required_m is not None:
+        st.success("Comfortable NPSH margin (≥20% above required).")
+    st.divider()
 
 # ── Pressure curve ────────────────────────────────────────────────────────────
 st.subheader("Pressure vs. Distance")

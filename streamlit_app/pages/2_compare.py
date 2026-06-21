@@ -32,10 +32,11 @@ except ValueError as e:
     st.stop()
 
 summary = pipeline["summary"]
+display_cols = [c for c in summary.columns if not c.endswith("_warning")]
 
 st.subheader("Scenario Summary")
 st.dataframe(
-    summary.style.format({
+    summary[display_cols].style.format({
         "diameter_m": "{:.4f}",
         "flow_rate_m3s": "{:.5f}",
         "velocity_m_s": "{:.3f}",
@@ -52,6 +53,16 @@ st.dataframe(
 for _, row in summary.iterrows():
     if row["velocity_warning"]:
         st.warning(f"**{row['scenario']}**: {row['velocity_warning']}")
+    if row.get("pump_load_warning"):
+        if "overloaded" in row["pump_load_warning"].lower():
+            st.error(f"**{row['scenario']}**: {row['pump_load_warning']}")
+        else:
+            st.warning(f"**{row['scenario']}**: {row['pump_load_warning']}")
+    if row.get("npsh_warning"):
+        if "cavitation" in row["npsh_warning"].lower():
+            st.error(f"**{row['scenario']}**: {row['npsh_warning']}")
+        else:
+            st.warning(f"**{row['scenario']}**: {row['npsh_warning']}")
 
 st.divider()
 

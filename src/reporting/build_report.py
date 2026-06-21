@@ -30,13 +30,15 @@ from reportlab.platypus import (
 
 from ..simulation.config_loader import (
     load_pipeline, run_monte_carlo_from_config, run_sensitivity_from_config,
+    load_economics_config,
 )
 from ..simulation.monte_carlo import summary_statistics
 from ..utils.constants import GRAVITY
 from .figures import (
     fig_head_loss_comparison, fig_diameter_sweep, fig_pressure_profile,
-    fig_energy_balance, fig_monte_carlo_histogram, fig_pareto_loss,
+    fig_energy_balance, fig_monte_carlo_histogram, fig_pareto_loss, fig_lifecycle_cost,
 )
+from ..economics.scenario_economics import compare_lifecycle_costs
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 DEJAVU_DIR = Path("/usr/share/fonts/truetype/dejavu")
@@ -161,6 +163,26 @@ def mc_summary_table_flowable(stats: pd.DataFrame, base_font: str) -> Table:
     return _styled_table(data, None, base_font)
 
 
+def lcca_table_flowable(lcca_df: pd.DataFrame, base_font: str) -> Table:
+    hstyle = _header_style(base_font)
+    header = [Paragraph(h, hstyle) for h in
+               ["Scenario", "D (mm)", "Unit Cost<br/>($/m)", "CAPEX<br/>($)",
+                "Annual OPEX<br/>(Yr 1, $)", "PV of OPEX<br/>($)", "Total Lifecycle<br/>Cost ($)"]]
+    data = [header]
+    for _, r in lcca_df.iterrows():
+        data.append([
+            r["scenario"],
+            f"{r['diameter_mm']:.1f}",
+            f"{r['unit_cost_per_m']:.2f}",
+            f"{r['capex']:,.2f}",
+            f"{r['annual_opex_year1']:,.2f}",
+            f"{r['present_value_opex']:,.2f}",
+            f"{r['total_lifecycle_cost']:,.2f}",
+        ])
+    widths = [2.6*cm, 1.5*cm, 1.8*cm, 2.1*cm, 2.3*cm, 2.1*cm, 2.4*cm]
+    return _styled_table(data, widths, base_font)
+
+
 # ── Main report generation ────────────────────────────────────────────────
 def generate_report(
     output_pdf: str | Path = None,
@@ -235,6 +257,11 @@ def generate_report(
     # Pareto chart (Muda): break down loss sources for the worst-case scenario.
     worst_name = summary.loc[summary["total_loss_m"].idxmax(), "scenario"]
     fig6 = fig_pareto_loss(results[worst_name].head_loss, figures_dir / "fig6_pareto.png")
+
+    # Lifecycle cost analysis (LCCA): CAPEX vs. PV of OPEX, config-driven.
+    econ_config = load_economics_config(config_dir=config_dir)
+    lcca_df = compare_lifecycle_costs(results, econ_config=econ_config)
+    fig7 = fig_lifecycle_cost(lcca_df, figures_dir / "fig7_lifecycle_cost.png")
 
     # ── Assemble PDF ──────────────────────────────────────────────────────
     doc = SimpleDocTemplate(
@@ -460,17 +487,88 @@ def generate_report(
             styles["Bullet"]
         ))
 
+    story.append(Paragraph(
+        "<b>NPSH (cavitation):</b> available suction head vs. required, "
+        "where suction-side parameters are configured:", styles["Body"]
+    ))
+    any_npsh = False
+    for name, r in results.items():
+        if r.npsh is None:
+            continue
+        any_npsh = True
+        line = f"<b>{name}:</b> NPSHa = {r.npsh.npsh_available_m:.2f} m"
+        if r.npsh.npsh_required_m is not None:
+            line += (f" vs. NPSHr = {r.npsh.npsh_required_m:.2f} m "
+                      f"({r.npsh.margin_ratio:.0%} margin)")
+        if r.npsh_warning:
+            line += f" — {r.npsh_warning}"
+        else:
+            line += " — comfortable margin." if r.npsh.npsh_required_m is not None else ""
+        story.append(Paragraph(f"• {line}", styles["Bullet"]))
+    if not any_npsh:
+        story.append(Paragraph(
+            "• No scenario has suction-side parameters "
+            "(<font name=\"Courier\">suction_pressure_Pa</font> / "
+            "<font name=\"Courier\">vapor_pressure_Pa</font>) configured — "
+            "the NPSH check is skipped.",
+            styles["Bullet"]
+        ))
+
     # 9. Conclusions
-    story.append(Paragraph("9. Conclusions &amp; Recommendations", styles["H1"]))
+    # 9. Lifecycle Cost Analysis
+    story.append(Paragraph("9. Lifecycle Cost Analysis (LCCA)", styles["H1"]))
+    story.append(Paragraph(
+        "Translating the hydraulic comparison into financial terms: CAPEX "
+        "(pipe material/installation) against the present value of OPEX "
+        "(electricity to overcome friction) over the analysis horizon "
+        f"({econ_config['years']} years, {econ_config['discount_rate']:.1%} discount rate). "
+        "<b>None of the cost inputs below are real market prices</b> — "
+        "they are the illustrative placeholders in "
+        "<font name=\"Courier\">configs/economics_config.yaml</font>, included "
+        "to demonstrate the calculation; replace them with real supplier "
+        "quotes and tariffs before using this for an actual decision. This "
+        "section presents factual present-value arithmetic only and is "
+        "not financial advice.",
+        styles["Body"]
+    ))
+    story.append(Spacer(1, 4))
+    story.append(lcca_table_flowable(lcca_df, base_font))
+    story.append(Spacer(1, 10))
+    story.append(KeepTogether([
+        fitted_image(fig7, width=15.5*cm),
+        Paragraph("Figure 7. Lifecycle cost breakdown: CAPEX vs. present value of OPEX.",
+                   styles["Caption"]),
+    ]))
+
+    cheapest_row = lcca_df.loc[lcca_df["total_lifecycle_cost"].idxmin()]
+    most_expensive_row = lcca_df.loc[lcca_df["total_lifecycle_cost"].idxmax()]
+    if cheapest_row["scenario"] != most_expensive_row["scenario"]:
+        story.append(Paragraph(
+            f"Under these assumptions, <b>{cheapest_row['scenario']}</b> has the lowest "
+            f"total lifecycle cost (${cheapest_row['total_lifecycle_cost']:,.2f}) despite "
+            f"{'a higher' if cheapest_row['capex'] > most_expensive_row['capex'] else 'a lower'} "
+            f"upfront CAPEX than <b>{most_expensive_row['scenario']}</b> "
+            f"(${most_expensive_row['total_lifecycle_cost']:,.2f} total) — "
+            f"illustrating why CAPEX-only pipe selection can be misleading "
+            f"once operating costs are included.",
+            styles["Body"]
+        ))
+
+    story.append(PageBreak())
+
+    # 10. Conclusions
+    story.append(Paragraph("10. Conclusions &amp; Recommendations", styles["H1"]))
     story.append(Paragraph(
         "For the evaluated flow rate, the narrow (1/2 inch) pipe is hydraulically "
         "impractical, producing both excessive head loss and a velocity far outside the "
         "SNI-recommended range. The wide (4 inch) pipe is comfortably within recommended "
         "limits at this flow rate; the diameter sensitivity analysis (Section 4) can guide "
         "selection of an intermediate size if minimizing material/installation cost is also "
-        "a design objective. Sensitivity and Monte Carlo results (Sections 4 and 7) should "
-        "be re-run whenever demand assumptions change — both are config-driven and require "
-        "no code changes to update.",
+        "a design objective. The lifecycle cost analysis (Section 9) reinforces this from a "
+        "financial angle: the narrow pipe's lower CAPEX is overwhelmed by its OPEX over the "
+        "analysis horizon. Sensitivity, Monte Carlo, and LCCA results (Sections 4, 7, and 9) "
+        "should be re-run whenever demand or cost assumptions change — all are config-driven "
+        "and require no code changes to update.",
         styles["Body"]
     ))
 
@@ -480,6 +578,9 @@ def generate_report(
         "Swamee, P.K. &amp; Jain, A.K. (1976). Explicit equations for pipe flow problems. "
         "Journal of the Hydraulics Division, ASCE, 102(5), 657–664.",
         "Bejan, A. (2016). Advanced Engineering Thermodynamics. Wiley. (Gouy–Stodola theorem)",
+        "Andrade, E.N. da C. (1930). The viscosity of liquids. Nature, 125, 309–310.",
+        "Antoine, C. (1888). Tensions des vapeurs: nouvelle relation entre les tensions et "
+        "les temperatures. Comptes Rendus, 107, 681–684.",
         "SNI 03-6481-2000 — Sistem Plambing 2000.",
         "SNI 03-7065-2005 — Tata cara perencanaan sistem plambing.",
     ]:

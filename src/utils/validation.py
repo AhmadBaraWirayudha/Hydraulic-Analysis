@@ -134,3 +134,107 @@ def check_velocity(velocity_m_s: float) -> str | None:
             f"({SNI_VELOCITY_MAX} m/s). Risk of water hammer."
         )
     return None  # within acceptable range
+
+
+# ── NPSH margin (cavitation risk check) ───────────────────────────────────
+def check_npsh_margin(npsh_available_m: float, npsh_required_m: float | None) -> str | None:
+    """Return a warning if NPSH available is insufficient relative to NPSH
+    required (cavitation risk), or None if acceptable or no NPSHr was
+    supplied.
+
+    Thresholds follow common Hydraulic Institute practice: NPSHa < NPSHr is
+    outright cavitation risk; a margin ratio below 1.2 (i.e. less than 20%
+    headroom) is flagged as thin, since real-world margins erode with pump
+    wear, suction strainer fouling, and temperature drift. This is a general
+    engineering guideline, not a universal standard — some applications
+    (e.g. API 610 services) call for larger margins.
+
+    Parameters
+    ----------
+    npsh_available_m : float        NPSHa, computed at the operating point [m]
+    npsh_required_m  : float | None NPSHr from the pump's manufacturer curve [m];
+                                     None skips the check entirely
+    """
+    if npsh_required_m is None or npsh_required_m <= 0:
+        return None
+    margin_ratio = npsh_available_m / npsh_required_m
+    if margin_ratio < 1.0:
+        return (
+            f"⚠️  Cavitation risk: NPSH available ({npsh_available_m:.2f} m) is "
+            f"below NPSH required ({npsh_required_m:.2f} m) — "
+            f"{margin_ratio:.0%} margin. Expect vapor bubble formation/collapse "
+            f"at the impeller, causing erosion, noise, and performance loss."
+        )
+    if margin_ratio < 1.2:
+        return (
+            f"⚠️  Thin NPSH margin: {margin_ratio:.0%} of required "
+            f"({npsh_available_m:.2f} m available vs {npsh_required_m:.2f} m "
+            f"required). Common practice recommends ≥20% margin to absorb "
+            f"wear, fouling, and operating-point drift."
+        )
+    return None
+
+
+# ── Voltage unbalance (motor protection check) ────────────────────────────
+def check_voltage_unbalance(unbalance_percent: float) -> str | None:
+    """Return a warning if voltage unbalance exceeds NEMA's recommended
+    operating limits, or None if within bounds.
+
+    NEMA MG1 consistently recommends against operating motors above 5%
+    voltage unbalance across all cited sources, and recommends derating
+    above 1%. The precise derating *amount* between those thresholds
+    depends on motor load and class and isn't hardcoded here — see
+    ``hydraulics.electrical.derating_factor_from_curve`` to apply your
+    motor's actual published derating curve once unbalance is flagged.
+
+    Parameters
+    ----------
+    unbalance_percent : float  voltage unbalance, in percent (see
+                         ``hydraulics.electrical.voltage_unbalance_percent``)
+    """
+    if unbalance_percent > 5.0:
+        return (
+            f"⚠️  Voltage unbalance {unbalance_percent:.1f}% exceeds NEMA's "
+            f"5% maximum recommended operating limit. Operation above this "
+            f"level is not recommended — investigate the supply before continuing."
+        )
+    if unbalance_percent > 1.0:
+        return (
+            f"⚠️  Voltage unbalance {unbalance_percent:.1f}% exceeds NEMA's 1% "
+            f"threshold where derating is recommended. Apply your motor's "
+            f"published derating curve (see hydraulics.electrical.derating_factor_from_curve)."
+        )
+    return None
+
+
+# ── Water hammer (transient pressure surge) check ─────────────────────────
+def check_water_hammer_risk(peak_pressure_Pa: float, pipe_rated_pressure_Pa: float | None) -> str | None:
+    """Return a warning if a predicted water-hammer peak pressure
+    approaches or exceeds the pipe's rated pressure, or None if acceptable
+    or no rating was supplied.
+
+    Parameters
+    ----------
+    peak_pressure_Pa        : float        predicted peak pressure during
+                               the transient [Pa] (see
+                               ``hydraulics.transients.WaterHammerResult.peak_pressure_Pa``)
+    pipe_rated_pressure_Pa  : float | None  pipe's pressure rating (e.g. its
+                               PN/pressure class) [Pa]; None skips the check
+    """
+    if pipe_rated_pressure_Pa is None or pipe_rated_pressure_Pa <= 0:
+        return None
+    ratio = peak_pressure_Pa / pipe_rated_pressure_Pa
+    if ratio > 1.0:
+        return (
+            f"⚠️  Water hammer risk: predicted peak pressure ({peak_pressure_Pa/1000:.1f} kPa) "
+            f"exceeds the pipe's rated pressure ({pipe_rated_pressure_Pa/1000:.1f} kPa) — "
+            f"{ratio:.0%} of rating. Risk of pipe rupture — slow the valve/pump "
+            f"closure, add surge protection, or select a higher-rated pipe."
+        )
+    if ratio > 0.8:
+        return (
+            f"⚠️  Predicted peak pressure is at {ratio:.0%} of the pipe's rated "
+            f"pressure — thin margin for a transient event. Consider surge "
+            f"protection (e.g. slower valve closure, surge tanks, relief valves)."
+        )
+    return None

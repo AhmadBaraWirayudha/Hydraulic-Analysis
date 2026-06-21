@@ -130,3 +130,58 @@ def test_load_scenario_from_config_passes_through_rated_power_w():
     config = {"diameter_m": 0.1, "flow_rate_m3s": 0.0005, "rated_power_W": 50.0}
     scenario = load_scenario_from_config(config)
     assert scenario.rated_power_W == 50.0
+
+
+# ── NPSH (cavitation) integration ──────────────────────────────────────────
+def test_npsh_skipped_by_default():
+    result = run_simulation(diameter_m=0.0508, flow_rate_m3s=0.0005, length_m=100.0)
+    assert result.npsh is None
+    assert result.npsh_warning is None
+
+
+def test_npsh_skipped_if_only_one_of_suction_vapor_pressure_given():
+    """Both suction_pressure_Pa AND vapor_pressure_Pa are required to run the check."""
+    result = run_simulation(diameter_m=0.0508, flow_rate_m3s=0.0005, length_m=100.0,
+                             suction_pressure_Pa=101325)
+    assert result.npsh is None
+    result2 = run_simulation(diameter_m=0.0508, flow_rate_m3s=0.0005, length_m=100.0,
+                              vapor_pressure_Pa=2339)
+    assert result2.npsh is None
+
+
+def test_npsh_computed_when_both_pressures_given():
+    result = run_simulation(
+        diameter_m=0.0508, flow_rate_m3s=0.0005, length_m=100.0,
+        suction_pressure_Pa=101325, vapor_pressure_Pa=2339,
+    )
+    assert result.npsh is not None
+    assert result.npsh.npsh_available_m > 0
+    assert result.npsh_warning is None  # no npsh_required_m given -> no margin warning
+
+
+def test_npsh_warning_fires_with_cavitation_risk_inputs():
+    from src.hydraulics.fluid_properties import water_vapor_pressure
+
+    pv_hot = water_vapor_pressure(363.15)  # 90 degC
+    result = run_simulation(
+        diameter_m=0.0508, flow_rate_m3s=0.0005, length_m=100.0,
+        suction_pressure_Pa=101325, vapor_pressure_Pa=pv_hot,
+        inlet_elevation_m=-2.0, suction_head_loss_m=1.0, npsh_required_m=4.0,
+    )
+    assert result.npsh_warning is not None
+    assert "cavitation" in result.npsh_warning.lower()
+
+
+def test_load_scenario_from_config_passes_through_npsh_fields():
+    config = {
+        "diameter_m": 0.1, "flow_rate_m3s": 0.0005,
+        "suction_pressure_Pa": 101325.0, "vapor_pressure_Pa": 2339.0,
+        "inlet_elevation_m": -1.5, "suction_head_loss_m": 0.3,
+        "npsh_required_m": 3.0,
+    }
+    scenario = load_scenario_from_config(config)
+    assert scenario.suction_pressure_Pa == 101325.0
+    assert scenario.vapor_pressure_Pa == 2339.0
+    assert scenario.inlet_elevation_m == -1.5
+    assert scenario.suction_head_loss_m == 0.3
+    assert scenario.npsh_required_m == 3.0

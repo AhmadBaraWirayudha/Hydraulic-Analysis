@@ -11,7 +11,7 @@ import pytest
 
 from src.reporting.figures import (
     fig_head_loss_comparison, fig_diameter_sweep, fig_energy_balance,
-    fig_monte_carlo_histogram,
+    fig_monte_carlo_histogram, fig_lifecycle_cost,
 )
 from src.reporting.build_report import generate_report, register_fonts
 
@@ -72,6 +72,16 @@ def test_fig_monte_carlo_histogram_creates_file(tmp_figdir):
     assert path.exists()
 
 
+def test_fig_lifecycle_cost_creates_file(tmp_figdir):
+    lcca_df = pd.DataFrame({
+        "scenario": ["half_inch", "four_inch"],
+        "capex": [500.0, 2800.0],
+        "present_value_opex": [13816.78, 0.79],
+    })
+    path = fig_lifecycle_cost(lcca_df, tmp_figdir / "fig7.png")
+    assert path.exists()
+
+
 def test_register_fonts_returns_valid_font_name():
     font = register_fonts()
     assert font in ("DejaVuSans", "Helvetica")
@@ -99,4 +109,4 @@ def test_generate_report_produces_valid_pdf(tmp_path):
 
     # Figures should have been generated alongside the PDF.
     pngs = list(figures_dir.glob("*.png"))
-    assert len(pngs) == 6
+    assert len(pngs) == 7

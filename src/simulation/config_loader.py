@@ -127,6 +127,11 @@ def build_scenarios(
             eta_motor=entry.get("eta_motor", 0.90),
             ambient_temp_K=fluid.get("ambient_temp_K", 298.15),
             rated_power_W=entry.get("rated_power_W"),
+            suction_pressure_Pa=entry.get("suction_pressure_Pa"),
+            vapor_pressure_Pa=entry.get("vapor_pressure_Pa"),
+            inlet_elevation_m=entry.get("inlet_elevation_m", 0.0),
+            suction_head_loss_m=entry.get("suction_head_loss_m", 0.0),
+            npsh_required_m=entry.get("npsh_required_m"),
             label=f"{pipe.get('label', pipe_key)} / {fluid.get('label', fluid_key)}",
         )
 
@@ -155,6 +160,11 @@ def run_scenarios(scenarios: dict[str, PipeScenario]) -> dict[str, ScenarioResul
             eta_motor=s.eta_motor,
             ambient_temp_K=s.ambient_temp_K,
             rated_power_W=s.rated_power_W,
+            suction_pressure_Pa=s.suction_pressure_Pa,
+            vapor_pressure_Pa=s.vapor_pressure_Pa,
+            inlet_elevation_m=s.inlet_elevation_m,
+            suction_head_loss_m=s.suction_head_loss_m,
+            npsh_required_m=s.npsh_required_m,
             label=s.label,
         )
     return results
@@ -177,6 +187,7 @@ def scenarios_summary_table(results: dict[str, ScenarioResult]) -> pd.DataFrame:
             "exergy_destroyed_W": r.exergy.exergy_destruction_W,
             "velocity_warning": r.velocity_warning,
             "pump_load_warning": r.pump_load_warning,
+            "npsh_warning": r.npsh_warning,
         })
     return pd.DataFrame(rows)
 
@@ -262,3 +273,21 @@ def load_pipeline(config_dir: str | Path = "configs") -> dict:
         "monte_carlo_config": scenario_config.get("monte_carlo", {}),
         "sensitivity_config": scenario_config.get("sensitivity", {}),
     }
+
+
+def load_economics_config(config_dir: str | Path = "configs") -> dict:
+    """Load ``economics_config.yaml`` and return its parsed contents
+    (pipe cost curve, electricity price, discount rate, etc.) for use with
+    ``economics.scenario_economics.EconomicAssumptions``.
+
+    Parameters
+    ----------
+    config_dir : str | Path  directory containing ``economics_config.yaml``
+
+    Returns
+    -------
+    dict
+        Raw parsed YAML contents.
+    """
+    config_dir = Path(config_dir)
+    return load_yaml(config_dir / "economics_config.yaml")

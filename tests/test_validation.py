@@ -11,6 +11,9 @@ from src.utils.validation import (
     validate_pump,
     check_velocity,
     check_pump_load,
+    check_npsh_margin,
+    check_voltage_unbalance,
+    check_water_hammer_risk,
 )
 from src.utils.constants import SNI_VELOCITY_MIN, SNI_VELOCITY_MAX
 
@@ -162,3 +165,87 @@ def test_check_pump_load_exactly_100_percent_is_not_yet_overloaded():
     warning = check_pump_load(1000.0, 1000.0)
     assert warning is not None
     assert "overloaded" not in warning.lower()
+
+
+# ── check_npsh_margin (cavitation risk check) ─────────────────────────────
+def test_check_npsh_margin_returns_none_when_no_required():
+    assert check_npsh_margin(5.0, None) is None
+    assert check_npsh_margin(5.0, 0.0) is None
+    assert check_npsh_margin(5.0, -1.0) is None
+
+
+def test_check_npsh_margin_comfortable_margin_returns_none():
+    assert check_npsh_margin(10.0, 5.0) is None  # 200% margin
+
+
+def test_check_npsh_margin_below_required_warns_cavitation():
+    warning = check_npsh_margin(3.0, 5.0)  # 60% — NPSHa < NPSHr
+    assert warning is not None
+    assert "cavitation" in warning.lower()
+
+
+def test_check_npsh_margin_thin_margin_warns_without_cavitation_language():
+    warning = check_npsh_margin(5.5, 5.0)  # 110% — thin but not below required
+    assert warning is not None
+    assert "cavitation" not in warning.lower()
+    assert "thin" in warning.lower()
+
+
+def test_check_npsh_margin_exactly_120_percent_is_not_yet_thin():
+    """120% is the boundary; should be considered acceptable (strictly > 1.2 -> None)."""
+    assert check_npsh_margin(6.0, 5.0) is None  # exactly 120%
+
+
+def test_check_npsh_margin_exactly_100_percent_warns_but_not_cavitation():
+    """Exactly NPSHa == NPSHr (100%) should warn as thin margin, not cavitation."""
+    warning = check_npsh_margin(5.0, 5.0)
+    assert warning is not None
+    assert "cavitation" not in warning.lower()
+
+
+# ── check_voltage_unbalance (NEMA motor protection check) ─────────────────
+def test_check_voltage_unbalance_within_1_percent_returns_none():
+    assert check_voltage_unbalance(0.0) is None
+    assert check_voltage_unbalance(1.0) is None
+
+
+def test_check_voltage_unbalance_between_1_and_5_percent_warns_derating():
+    warning = check_voltage_unbalance(3.0)
+    assert warning is not None
+    assert "derating" in warning.lower()
+    assert "not recommended" not in warning.lower()
+
+
+def test_check_voltage_unbalance_above_5_percent_warns_not_recommended():
+    warning = check_voltage_unbalance(6.0)
+    assert warning is not None
+    assert "not recommended" in warning.lower()
+
+
+def test_check_voltage_unbalance_exactly_5_percent_is_still_derating_band():
+    """5% is the boundary; should warn as derating-band, not 'not recommended'."""
+    warning = check_voltage_unbalance(5.0)
+    assert warning is not None
+    assert "not recommended" not in warning.lower()
+
+
+# ── check_water_hammer_risk ────────────────────────────────────────────────
+def test_check_water_hammer_risk_returns_none_when_no_rating():
+    assert check_water_hammer_risk(2_000_000, None) is None
+    assert check_water_hammer_risk(2_000_000, 0.0) is None
+
+
+def test_check_water_hammer_risk_under_80_percent_returns_none():
+    assert check_water_hammer_risk(500_000, 1_000_000) is None
+
+
+def test_check_water_hammer_risk_between_80_and_100_warns_without_rupture_language():
+    warning = check_water_hammer_risk(900_000, 1_000_000)
+    assert warning is not None
+    assert "rupture" not in warning.lower()
+
+
+def test_check_water_hammer_risk_over_100_percent_warns_rupture_risk():
+    warning = check_water_hammer_risk(1_200_000, 1_000_000)
+    assert warning is not None
+    assert "rupture" in warning.lower()

@@ -115,6 +115,11 @@ def run_monte_carlo(
             eta_motor=overrides.get("eta_motor", base_scenario.eta_motor),
             ambient_temp_K=base_scenario.ambient_temp_K,
             rated_power_W=base_scenario.rated_power_W,
+            suction_pressure_Pa=base_scenario.suction_pressure_Pa,
+            vapor_pressure_Pa=base_scenario.vapor_pressure_Pa,
+            inlet_elevation_m=base_scenario.inlet_elevation_m,
+            suction_head_loss_m=base_scenario.suction_head_loss_m,
+            npsh_required_m=base_scenario.npsh_required_m,
         )
 
         try:

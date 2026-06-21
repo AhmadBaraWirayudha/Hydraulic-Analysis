@@ -176,3 +176,29 @@ def fig_pareto_loss(head_loss_result, out_path: Path) -> Path:
     fig.savefig(out_path)
     plt.close(fig)
     return out_path
+
+
+def fig_lifecycle_cost(lcca_df: pd.DataFrame, out_path: Path) -> Path:
+    """Stacked bar chart: CAPEX vs. present value of OPEX, by scenario —
+    the financial-dashboard view of the same hydraulic tradeoff.
+
+    Parameters
+    ----------
+    lcca_df : pd.DataFrame  output of
+              ``economics.scenario_economics.compare_lifecycle_costs``,
+              must have columns: scenario, capex, present_value_opex
+    """
+    fig, ax = plt.subplots(figsize=(6.5, 3.8))
+    x = np.arange(len(lcca_df))
+    ax.bar(x, lcca_df["capex"], label="CAPEX", color="#1f77b4")
+    ax.bar(x, lcca_df["present_value_opex"], bottom=lcca_df["capex"],
+           label="PV of OPEX", color="#d62728")
+    ax.set_xticks(x)
+    ax.set_xticklabels(lcca_df["scenario"])
+    ax.set_ylabel("Cost ($)")
+    ax.set_title("Lifecycle Cost Breakdown: CAPEX vs. PV of OPEX")
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(out_path)
+    plt.close(fig)
+    return out_path

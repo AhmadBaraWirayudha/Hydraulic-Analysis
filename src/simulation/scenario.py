@@ -7,9 +7,10 @@ metrics needed for reporting and the Streamlit dashboard.
 from dataclasses import dataclass
 
 from ..utils.constants import WATER_DENSITY, WATER_VISCOSITY, PVC_ROUGHNESS, GRAVITY
-from ..utils.validation import check_velocity, check_pump_load
+from ..utils.validation import check_velocity, check_pump_load, check_npsh_margin
 from ..hydraulics.head_loss import total_head_loss, HeadLossResult
 from ..hydraulics.pump import pump_shaft_power, exergy_destruction, PumpPowerResult, ExergyResult
+from ..hydraulics.npsh import evaluate_npsh, NPSHResult
 
 
 @dataclass
@@ -29,6 +30,15 @@ class PipeScenario:
     ``rated_power_W`` is the pump's rated/nameplate shaft power, used only
     for the Lean *Muri* (overburden) check — flags when required shaft
     power exceeds 80%/100% of this rating. None (default) skips the check.
+
+    ``suction_pressure_Pa`` / ``vapor_pressure_Pa`` / ``inlet_elevation_m``
+    / ``suction_head_loss_m`` / ``npsh_required_m`` together drive the NPSH
+    (cavitation) check — see ``hydraulics.npsh``. The check only runs if
+    both ``suction_pressure_Pa`` and ``vapor_pressure_Pa`` are supplied;
+    ``npsh_required_m`` is additionally needed to get a margin warning
+    rather than just the raw NPSHa value. Use
+    ``hydraulics.fluid_properties.water_vapor_pressure(temperature_K)`` to
+    derive ``vapor_pressure_Pa`` for water at a given operating temperature.
     """
 
     diameter_m: float
@@ -43,6 +53,11 @@ class PipeScenario:
     eta_motor: float = 0.90
     ambient_temp_K: float = 298.15
     rated_power_W: float | None = None
+    suction_pressure_Pa: float | None = None
+    vapor_pressure_Pa: float | None = None
+    inlet_elevation_m: float = 0.0
+    suction_head_loss_m: float = 0.0
+    npsh_required_m: float | None = None
     label: str = ""
 
 
@@ -56,6 +71,8 @@ class ScenarioResult:
     exergy: ExergyResult
     velocity_warning: str | None = None
     pump_load_warning: str | None = None
+    npsh: NPSHResult | None = None
+    npsh_warning: str | None = None
 
     # ── Convenience accessors used by the Streamlit UI ───────────────────────
     @property
@@ -96,6 +113,11 @@ def run_simulation(
     eta_motor: float = 0.90,
     ambient_temp_K: float = 298.15,
     rated_power_W: float | None = None,
+    suction_pressure_Pa: float | None = None,
+    vapor_pressure_Pa: float | None = None,
+    inlet_elevation_m: float = 0.0,
+    suction_head_loss_m: float = 0.0,
+    npsh_required_m: float | None = None,
     label: str = "",
 ) -> ScenarioResult:
     """Run a complete hydraulic scenario: head loss → pump power → exergy.
@@ -120,6 +142,15 @@ def run_simulation(
     ambient_temp_K: float  reference temperature for exergy calc [K]
     rated_power_W : float | None  pump's rated shaft power [W], for the
                             Lean Muri (overburden) check; None skips it
+    suction_pressure_Pa : float | None  absolute suction-source pressure [Pa];
+                            with vapor_pressure_Pa, enables the NPSH check
+    vapor_pressure_Pa   : float | None  fluid vapor pressure at operating
+                            temp [Pa]; see hydraulics.fluid_properties
+    inlet_elevation_m   : float  suction source elevation vs. pump
+                            centerline [m] (negative = suction lift)
+    suction_head_loss_m : float  friction loss in suction-side piping [m]
+    npsh_required_m     : float | None  pump's NPSHr from its curve [m];
+                            adds a margin warning on top of raw NPSHa
     label         : str    optional scenario name, for reporting
 
     Returns
@@ -142,6 +173,11 @@ def run_simulation(
         eta_motor=eta_motor,
         ambient_temp_K=ambient_temp_K,
         rated_power_W=rated_power_W,
+        suction_pressure_Pa=suction_pressure_Pa,
+        vapor_pressure_Pa=vapor_pressure_Pa,
+        inlet_elevation_m=inlet_elevation_m,
+        suction_head_loss_m=suction_head_loss_m,
+        npsh_required_m=npsh_required_m,
         label=label,
     )
 
@@ -180,6 +216,21 @@ def run_simulation(
     v_warning = check_velocity(hl.velocity_m_s)
     load_warning = check_pump_load(pump_result.shaft_power_W, rated_power_W)
 
+    # NPSH check only runs if both suction and vapor pressure are known —
+    # without them there's no way to compute NPSHa at all.
+    npsh_result = None
+    npsh_warning = None
+    if suction_pressure_Pa is not None and vapor_pressure_Pa is not None:
+        npsh_result = evaluate_npsh(
+            suction_pressure_Pa=suction_pressure_Pa,
+            vapor_pressure_Pa=vapor_pressure_Pa,
+            density=density,
+            inlet_elevation_m=inlet_elevation_m,
+            suction_head_loss_m=suction_head_loss_m,
+            npsh_required_m=npsh_required_m,
+        )
+        npsh_warning = check_npsh_margin(npsh_result.npsh_available_m, npsh_required_m)
+
     return ScenarioResult(
         scenario=scenario,
         head_loss=hl,
@@ -187,6 +238,8 @@ def run_simulation(
         exergy=exergy_result,
         velocity_warning=v_warning,
         pump_load_warning=load_warning,
+        npsh=npsh_result,
+        npsh_warning=npsh_warning,
     )
 
 
@@ -212,5 +265,10 @@ def load_scenario_from_config(config: dict) -> PipeScenario:
         eta_motor=config.get("eta_motor", 0.90),
         ambient_temp_K=config.get("ambient_temp_K", 298.15),
         rated_power_W=config.get("rated_power_W"),
+        suction_pressure_Pa=config.get("suction_pressure_Pa"),
+        vapor_pressure_Pa=config.get("vapor_pressure_Pa"),
+        inlet_elevation_m=config.get("inlet_elevation_m", 0.0),
+        suction_head_loss_m=config.get("suction_head_loss_m", 0.0),
+        npsh_required_m=config.get("npsh_required_m"),
         label=config.get("label", ""),
     )

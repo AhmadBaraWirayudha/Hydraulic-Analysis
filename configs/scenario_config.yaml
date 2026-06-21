@@ -10,6 +10,13 @@ scenarios:
     eta_motor: 0.90
     rated_power_W: 750.0      # deliberately undersized vs. required ~992 W,
                               # to demonstrate the Muri (overburden) check
+    # NPSH (cavitation) demo: suction lift + a deliberately demanding NPSHr
+    # to show the cavitation-risk warning path.
+    suction_pressure_Pa: 101325.0   # atmospheric, open suction source
+    vapor_pressure_Pa: 3163.24      # water @ 25 degC (water_vapor_pressure(298.15))
+    inlet_elevation_m: -1.5         # 1.5 m suction lift (source below pump)
+    suction_head_loss_m: 0.3
+    npsh_required_m: 9.0            # deliberately demanding, for the demo
 
   - name: "four_inch_baseline"
     pipe: four_inch
@@ -18,6 +25,12 @@ scenarios:
     eta_pump: 0.75
     eta_motor: 0.90
     rated_power_W: 1.0       # comfortably oversized vs. required <0.1 W
+    # NPSH demo: flooded suction + a modest NPSHr -> comfortable margin.
+    suction_pressure_Pa: 101325.0
+    vapor_pressure_Pa: 3163.24
+    inlet_elevation_m: 2.0          # 2 m flooded suction (source above pump)
+    suction_head_loss_m: 0.05
+    npsh_required_m: 3.0
 
 monte_carlo:
   n_samples: 2000

@@ -31,6 +31,7 @@ tool.
 - **Compare** — view scenarios loaded straight from `configs/*.yaml`, side by side
 - **Results** — view head loss, pump power, exergy destruction, pressure curve, and energy Sankey diagram
 - **Lean Dashboard** — Muda (waste Pareto + ranking), Mura (utilization unevenness), and Muri (pump overburden) across all scenarios
+- **Economics** — CAPEX vs. OPEX lifecycle cost comparison (factual present-value arithmetic, not financial advice)
 - **About** — background on the method and references
 
 Built with Lean / Poka-Yoke input validation: implausible inputs (negative

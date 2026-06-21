@@ -26,7 +26,7 @@ flowchart TD
     V -.->|invalid| ERR["ValueError<br/>(fail fast, no calc runs)"]
 
     subgraph Hydraulics["Hydraulics (pure functions)"]
-        H["friction.py + swamee_jain.py<br/>head_loss.py + pump.py"]
+        H["friction.py + swamee_jain.py<br/>head_loss.py + pump.py<br/>fluid_properties.py + npsh.py<br/>electrical.py + network.py + transients.py"]
     end
 
     H --> S
@@ -43,6 +43,8 @@ flowchart TD
     R --> P["plots/<br/>interactive Plotly"]
     R --> RP["reporting/<br/>static matplotlib"]
     R --> Lean["Lean 3M analysis"]
+    R --> Econ["economics/<br/>LCCA: CAPEX vs. OPEX"]
+    Econ --> UI
 
     P --> UI["Streamlit Dashboard<br/>Input · Compare · Results ·<br/>Lean Dashboard · About"]
     RP --> PDF["reports/final_report.pdf"]
@@ -104,7 +106,7 @@ itself feeds back into both the dashboard and the report.
 
 | Lean concept | Implementation |
 |---|---|
-| **Poka-Yoke** (mistake-proofing) | `utils/validation.py` — hard input checks (raise) + soft SNI velocity / Muri checks (warn) |
+| **Poka-Yoke** (mistake-proofing) | `utils/validation.py` — hard input checks (raise) + soft SNI velocity / Muri / NPSH checks (warn) |
 | **Muda** (waste) | Exergy destroyed (`pump.exergy_destruction`) quantifies irrecoverable energy waste from friction; visualized via the Sankey diagram (per-scenario) and `plots/pareto.py`'s Pareto chart + waste ranking (across loss sources / across scenarios) |
 | **Mura** (unevenness) | `plots/pareto.py::utilization_heatmap_figure` compares SNI-velocity utilization across all scenarios side by side, surfacing over- vs under-utilized pipe choices in one view |
 | **Muri** (overburden) | `utils/validation.py::check_pump_load` compares required shaft power against an optional `PipeScenario.rated_power_W`, flagging >80% (approaching) and >100% (overloaded) |

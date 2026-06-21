@@ -187,3 +187,18 @@ def test_real_config_demonstrates_muri_overburden_contrast():
     assert half.pump_load_warning is not None
     assert "overloaded" in half.pump_load_warning.lower()
     assert four.pump_load_warning is None
+
+
+def test_real_config_demonstrates_npsh_cavitation_contrast():
+    """The shipped scenario_config.yaml deliberately gives half_inch_baseline
+    a demanding NPSHr under suction lift (cavitation risk), while
+    four_inch_baseline has flooded suction and a comfortable margin."""
+    pipeline = load_pipeline(config_dir="configs")
+    half = pipeline["results"]["half_inch_baseline"]
+    four = pipeline["results"]["four_inch_baseline"]
+    assert half.npsh is not None
+    assert half.npsh_warning is not None
+    assert "cavitation" in half.npsh_warning.lower()
+    assert four.npsh is not None
+    assert four.npsh_warning is None
+    assert four.npsh.margin_ratio > 1.2

@@ -64,6 +64,11 @@ def sweep_parameter(
                 eta_motor=scenario.eta_motor,
                 ambient_temp_K=scenario.ambient_temp_K,
                 rated_power_W=scenario.rated_power_W,
+                suction_pressure_Pa=scenario.suction_pressure_Pa,
+                vapor_pressure_Pa=scenario.vapor_pressure_Pa,
+                inlet_elevation_m=scenario.inlet_elevation_m,
+                suction_head_loss_m=scenario.suction_head_loss_m,
+                npsh_required_m=scenario.npsh_required_m,
             )
         except ValueError as e:
             rows.append({parameter: val, "error": str(e)})
