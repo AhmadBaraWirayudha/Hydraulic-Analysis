@@ -1,0 +1,48 @@
+services:
+  db:
+    image: postgis/postgis:16-3.4
+    environment:
+      POSTGRES_DB: hydraulic_analysis
+      POSTGRES_USER: hydraulic_app
+      # Change this for anything beyond local development — see
+      # DEPLOYMENT.md for managing real secrets.
+      POSTGRES_PASSWORD: dev_password_change_in_production
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hydraulic_app -d hydraulic_analysis"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: streamlit_app/Dockerfile
+    ports:
+      - "8501:8501"
+    environment:
+      HYDRAULIC_DB_HOST: db
+      HYDRAULIC_DB_PORT: "5432"
+      HYDRAULIC_DB_NAME: hydraulic_analysis
+      HYDRAULIC_DB_USER: hydraulic_app
+      HYDRAULIC_DB_PASSWORD: dev_password_change_in_production
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      # Mount configs/ read-write so editing YAML locally (or via the
+      # Config Editor page) is reflected without rebuilding the image.
+      # Remove this mount for a fully immutable production image.
+      - ./configs:/app/configs
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+volumes:
+  postgres_data:

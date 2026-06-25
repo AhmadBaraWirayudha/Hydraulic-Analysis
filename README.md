@@ -4,10 +4,24 @@ A modular, config-driven Python package for analyzing water distribution
 pipelines using the **Darcy–Weisbach** and **Swamee–Jain (1976)** equations
 — originally developed to evaluate pipe-diameter choices for the **Citra
 Srie Pradita** housing estate, and rebuilt here as a reusable engineering
-module rather than a one-off script.
+module rather than a one-off script. Now with the governance layer a
+multi-engineer team actually needs: **role-based access control**, **audit
+logging**, and a **PostGIS-backed geospatial map** of the physical network.
 
 ## Features
 
+- **Role-based access control (RBAC)**: two demo roles — Field Technician
+  (view-only) and Lead Engineer (can run ad-hoc scenarios and edit YAML
+  configuration). Enforced on every page, not just hidden in the UI; see
+  `tests/test_streamlit_rbac.py` for the automated proof (using Streamlit's
+  official `AppTest` framework — simulated logins, not just code review).
+- **Audit logging**: every scenario run and configuration edit is recorded
+  to PostgreSQL — who, when, and (for config edits) the exact field-level
+  diff — viewable on the Audit Log page.
+- **Geospatial network view**: the pipe network's real physical layout,
+  stored in PostGIS and rendered on an interactive Folium map, color-coded
+  by velocity against the SNI 03-6481-2000 range — the Lean Dashboard's
+  Mura (unevenness) lens, applied spatially.
 - **Hydraulic calculations**: friction factor (laminar/turbulent dispatch),
   Reynolds number, major (Darcy-Weisbach) and minor (K-factor) head losses,
   pump shaft power, and **exergy destruction** (Gouy-Stodola theorem) for
@@ -41,6 +55,16 @@ module rather than a one-off script.
   No real-world prices are hardcoded; every cost input is explicitly
   user-supplied (see `configs/economics_config.yaml`). Provides factual
   present-value arithmetic only, not investment recommendations.
+- **Predictive maintenance (ML demo)**: `src/machine_learning/` —
+  Random Forest regression for forecasting pipe roughness degradation,
+  plus two complementary anomaly-detection approaches (a transparent SPC
+  control chart, and an Isolation Forest for multivariate patterns).
+  **Read the module docstrings before trusting any number here**: training
+  data is synthetic — the hydraulic baseline is real (computed via this
+  project's own Darcy-Weisbach engine), but the degradation trend, sensor
+  noise, and anomalies are fabricated for demonstration. This shows the ML
+  *pattern*, not a validated predictive tool; swap in real inspection/
+  sensor data for actual use.
 - **Network analysis (Hardy Cross)**: `src/hydraulics/network.py` solves
   flow distribution in closed-loop pipe networks — multiple interconnected
   pipes, not just one line. The core loop-balancing solver is verified
@@ -87,6 +111,11 @@ module rather than a one-off script.
 ```
 hydraulic-analysis/
 ├── .devcontainer/             # VS Code dev container (Python, ruff, Jupyter)
+├── .streamlit/config.toml    # production Streamlit settings (theme, no usage stats)
+├── .env.example                # database connection settings template
+├── docker-compose.yml         # app + PostGIS-enabled Postgres, for local/production-like testing
+├── DEPLOYMENT.md              # Streamlit Cloud / Docker / PaaS deployment guide
+├── Makefile                   # make install|test|lint|report|run|docker-build|...
 ├── configs/                 # YAML scenario/pipe/fluid/economics configs
 ├── data/                     # raw/processed input data
 ├── docs/                     # design notes, user guide
@@ -100,26 +129,68 @@ hydraulic-analysis/
 │   │                         # network.py, transients.py
 │   ├── simulation/           # scenario.py, monte_carlo.py, sensitivity.py, config_loader.py
 │   ├── economics/            # lcca.py, scenario_economics.py
+│   ├── machine_learning/     # synthetic_data.py, degradation_model.py, anomaly_detection.py
+│   ├── auth/                 # models.py (User, Role), service.py (RBAC + bcrypt hashing)
+│   ├── audit/                # models.py, service.py (who/when/what logging)
+│   ├── geospatial/            # models.py, service.py (PostGIS CRUD), map_view.py (Folium)
+│   ├── db.py                 # shared PostgreSQL/PostGIS connection + schema
 │   ├── plots/                # plot_pressure.py, plot_efficiency.py, sankey.py, pareto.py (interactive, for Streamlit)
 │   ├── reporting/            # figures.py, build_report.py (static, for the PDF report)
-│   └── utils/                # constants.py, units.py, validation.py
-├── streamlit_app/             # app.py + pages/{1_input,2_compare,3_results,4_lean_dashboard,5_economics,6_about}.py + Dockerfile
-└── tests/                     # pytest suite
+│   └── utils/                # constants.py, units.py, validation.py, yaml_diff.py
+├── streamlit_app/             # app.py (login) + auth_helpers.py +
+│   │                         # pages/{1_input,2_compare,3_results,4_lean_dashboard,
+│   │                         #         5_economics,6_network_map,7_config_editor,
+│   │                         #         8_audit_log,9_about}.py + Dockerfile
+└── tests/                     # pytest suite (DB-dependent tests skip cleanly if no Postgres reachable)
 ```
 
 ## Installation
 
+The dashboard now requires PostgreSQL with the PostGIS extension (for
+login/RBAC, audit logging, and the network map). The easiest path is
+Docker, which sets up both the app and a correctly-configured database in
+one command:
+
 ```bash
 git clone <repo-url>
 cd hydraulic-analysis
+docker compose up --build
+```
+
+Visit `http://localhost:8501` and sign in with one of the demo accounts:
+
+| Username | Password | Role | Access |
+|---|---|---|---|
+| `technician` | `technician123` | Field Technician | View-only — all dashboards |
+| `engineer` | `engineer123` | Lead Engineer | Full — also runs scenarios, edits config, views audit log |
+
+**Change these before any real deployment** — they're seeded automatically
+on first run for demonstration purposes only.
+
+### Without Docker
+
+You'll need your own PostgreSQL+PostGIS instance (see
+[DEPLOYMENT.md](DEPLOYMENT.md)), then:
+
+```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
+cp .env.example .env   # then edit with your database connection details
+export $(grep -v '^#' .env | xargs)   # or use your own env-loading approach
+streamlit run streamlit_app/app.py
 ```
+
+The pure hydraulics/economics/ML modules (`src/hydraulics/`,
+`src/simulation/`, `src/economics/`, `src/machine_learning/`) have no
+database dependency and work standalone — only `src/auth/`, `src/audit/`,
+and `src/geospatial/` (and the Streamlit pages that use them) need Postgres.
 
 Or open in VS Code with the **Dev Containers** extension and "Reopen in
 Container" — `.devcontainer/` provides Python, ruff linting, and Jupyter
 pre-installed (separate from `streamlit_app/Dockerfile`, which builds the
-production dashboard image rather than a dev environment).
+production dashboard image rather than a dev environment; note the
+devcontainer doesn't include Postgres — pair it with `docker compose up -d db`
+if you need the database while developing).
 
 ## Usage
 
@@ -260,6 +331,68 @@ result = evaluate_water_hammer(
 print(result.peak_pressure_Pa, result.is_rapid_closure)
 ```
 
+### Predictive maintenance (ML demo — synthetic data, read the caveats)
+
+```python
+from src.machine_learning.synthetic_data import generate_synthetic_roughness_degradation
+from src.machine_learning.degradation_model import fit_degradation_model, predict_maintenance_threshold_day
+
+df = generate_synthetic_roughness_degradation(diameter_m=0.0508, flow_rate_m3s=0.0005, length_m=100.0)
+model_result = fit_degradation_model(df["day"], df["roughness_m"])
+threshold_day = predict_maintenance_threshold_day(
+    model_result, roughness_threshold_m=df["roughness_m"].iloc[0] * 1.5,
+)
+print(f"Test R2: {model_result.test_r2:.3f}, predicted maintenance trigger: day {threshold_day}")
+```
+
+See `notebooks/predictive_maintenance.ipynb` for the full degradation
+forecasting + anomaly detection (SPC vs. Isolation Forest) demonstration.
+
+### Role-based access control & audit logging
+
+```python
+from src.db import init_schema
+from src.auth.service import seed_demo_users, authenticate
+from src.audit.service import log_action, get_audit_log
+
+init_schema()           # idempotent — creates tables if they don't exist
+seed_demo_users()        # creates the two demo accounts if absent
+
+user = authenticate("engineer", "engineer123")
+print(user.role.display_name, user.can_edit_config)   # Lead Engineer True
+
+log_action(user.username, "run_scenario", {"diameter_m": 0.1016})
+for entry in get_audit_log(limit=5):
+    print(entry.created_at, entry.username, entry.action, entry.details)
+```
+
+RBAC is enforced on every Streamlit page via `streamlit_app/auth_helpers.py`'s
+`require_login()`/`require_role()` — see `tests/test_streamlit_rbac.py` for
+the automated proof (simulated logins via Streamlit's official `AppTest`
+framework, not just a code-review claim).
+
+### Geospatial network view
+
+```python
+from src.geospatial.service import seed_demo_network, get_network_geometry
+from src.geospatial.map_view import build_network_map
+from src.hydraulics.network import PipeNetwork, NetworkPipe
+from src.utils.constants import WATER_DENSITY, WATER_VISCOSITY
+
+seed_demo_network()   # the same 4-node, 2-loop demo network, with real coordinates
+nodes, pipes = get_network_geometry()
+
+# Solve hydraulically (reusing the existing Hardy Cross module) and color
+# the map by velocity:
+from src.geospatial.service import get_all_loops
+network_pipes = [NetworkPipe(p.name, p.start_node, p.end_node, p.diameter_m, p.length_m, p.roughness_m) for p in pipes]
+network = PipeNetwork(network_pipes, get_all_loops(), density=WATER_DENSITY, viscosity=WATER_VISCOSITY)
+solution = network.solve({"12": 0.006, "13": 0.004, "23": 0.0, "24": 0.006, "34": 0.004})
+
+fmap = build_network_map(nodes, pipes, flows=solution.flows)
+fmap.save("network_map.html")
+```
+
 ### Config-driven pipeline (no hardcoded values)
 
 ```python
@@ -298,6 +431,33 @@ docker run -p 8501:8501 hydraulic-dashboard
 ```bash
 pytest --maxfail=1 --disable-warnings -q
 ```
+
+Tests touching `src/auth/`, `src/audit/`, `src/geospatial/`, or
+`tests/test_streamlit_rbac.py` need a reachable PostgreSQL+PostGIS — they
+skip cleanly with a clear message if none is found (see
+`tests/conftest.py`), rather than failing the whole suite. Start one with:
+
+```bash
+docker compose up -d db
+```
+
+CI (`.github/workflows/ci.yml`) runs a `postgis/postgis` service container
+automatically, so these tests always run there.
+
+A `Makefile` wraps the common commands: `make install`, `make test`,
+`make lint`, `make report`, `make run` (Streamlit), `make docker-build`,
+`make docker-run`, `make compose-up`.
+
+## Deployment
+
+See **[DEPLOYMENT.md](DEPLOYMENT.md)** for step-by-step instructions —
+Streamlit Community Cloud (easiest, free), Docker/`docker-compose`, or
+any container-platform-as-a-service (Render, Railway, Fly.io). The app
+now needs a PostgreSQL+PostGIS database for login/RBAC, audit logging,
+and the network map — `docker-compose.yml` provisions one automatically;
+other paths need a managed Postgres instance with PostGIS enabled (most
+managed Postgres providers support this with one setting or `CREATE
+EXTENSION postgis;`).
 
 ## Method & References
 
