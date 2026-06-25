@@ -8,6 +8,12 @@ source .venv/bin/activate      # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
+The pure analysis modules covered in sections 2-10 below work standalone
+with no database. The Streamlit dashboard additionally needs PostgreSQL
+with PostGIS enabled — easiest via `docker compose up -d db`, or see
+[DEPLOYMENT.md](../DEPLOYMENT.md) for other options. Section 12 covers
+running the dashboard itself.
+
 ## 2. Running a single scenario
 
 ```python
@@ -292,7 +298,194 @@ network design (especially many-loop systems) and critical water-hammer
 certification typically use dedicated software (EPANET, transient
 solvers using the method of characteristics) for production decisions.
 
-## 10. Loading scenarios from config files
+## 10. Predictive Maintenance (ML Demo)
+
+`src/machine_learning/` demonstrates two ML patterns for pipe predictive
+maintenance: degradation forecasting (regression) and anomaly detection.
+
+**Before using any of this, read this carefully**: all training data is
+synthetic. `synthetic_data.py` computes the hydraulic baseline via this
+project's real Darcy-Weisbach engine, but the degradation trend over
+time, sensor noise, and injected anomalies are fabricated for
+demonstration — calibrated to "look reasonable," not measured from any
+real pipeline. Treat results here as a worked example of the ML
+*pattern*, not a validated predictive tool.
+
+```python
+from src.machine_learning.synthetic_data import generate_synthetic_roughness_degradation
+from src.machine_learning.degradation_model import fit_degradation_model, predict_maintenance_threshold_day
+
+df = generate_synthetic_roughness_degradation(diameter_m=0.0508, flow_rate_m3s=0.0005, length_m=100.0)
+result = fit_degradation_model(df["day"], df["roughness_m"])
+print(f"Test R2: {result.test_r2:.3f}")
+
+threshold_day = predict_maintenance_threshold_day(
+    result, roughness_threshold_m=df["roughness_m"].iloc[0] * 1.5,
+)
+```
+
+Random Forests don't extrapolate — predictions beyond the training day
+range plateau rather than continuing the trend. Reliable only within the
+range of days actually present in the training data.
+
+For anomaly detection, two complementary approaches are provided:
+
+```python
+from src.machine_learning.synthetic_data import generate_synthetic_sensor_data_with_anomalies
+from src.machine_learning.anomaly_detection import (
+    compute_spc_control_limits, flag_spc_anomalies,       # transparent, no training
+    fit_isolation_forest_detector, detect_anomalies,       # ML, multivariate
+    evaluate_detector_against_ground_truth,
+)
+
+sensor_df = generate_synthetic_sensor_data_with_anomalies(base_pressure_Pa=300_000, base_flow_m3s=0.0005)
+
+# SPC: establish a baseline from known-good historical readings
+limits = compute_spc_control_limits(sensor_df["pressure_Pa"].iloc[:100])
+spc_flags = flag_spc_anomalies(sensor_df["pressure_Pa"], limits)
+
+# Isolation Forest: can use multiple signals at once
+features = sensor_df[["pressure_Pa", "flow_m3s"]].values
+model = fit_isolation_forest_detector(features, contamination=0.05)
+iso_flags = detect_anomalies(model, features).anomaly_flags
+```
+
+Prefer the SPC control chart when interpretability matters or historical
+data is limited — it's the standard Lean Six Sigma tool for exactly this
+use case, requires no training, and produces a fully auditable decision
+rule. The Isolation Forest can catch subtler multivariate patterns at the
+cost of being a black box.
+
+See `notebooks/predictive_maintenance.ipynb` for the full demonstration,
+including precision/recall evaluation against known injected anomalies
+(only possible here because this is synthetic, labeled data — real
+deployments rarely have a reliable ground truth).
+
+## 11. Enterprise Layer: RBAC, Audit Logging, Geospatial Network
+
+Everything in this section needs a reachable PostgreSQL+PostGIS instance
+— start one with `docker compose up -d db`, or see
+[DEPLOYMENT.md](../DEPLOYMENT.md). Initialize the schema once (idempotent
+— safe to call on every startup, which is exactly what the Streamlit app
+does automatically):
+
+```python
+from src.db import init_schema
+init_schema()
+```
+
+### Users & roles
+
+Two roles: `Role.FIELD_TECHNICIAN` (view-only) and `Role.LEAD_ENGINEER`
+(can run ad-hoc scenarios and edit configuration). Passwords are hashed
+with bcrypt — never stored or compared in plaintext.
+
+```python
+from src.auth.service import create_user, authenticate, seed_demo_users
+from src.auth.models import Role
+
+# Demo accounts (technician/technician123, engineer/engineer123) — for
+# real use, create real accounts instead and don't rely on these:
+seed_demo_users()
+
+create_user("jsmith", "a_real_password", Role.LEAD_ENGINEER, full_name="Jane Smith")
+
+user = authenticate("jsmith", "a_real_password")
+if user is not None:
+    print(user.role.display_name, user.can_edit_config, user.can_run_scenarios)
+```
+
+`authenticate()` returns `None` on either a wrong password *or* a
+nonexistent username — deliberately indistinguishable, so failed logins
+don't leak which usernames are registered.
+
+### Audit logging
+
+```python
+from src.audit.service import log_action, get_audit_log
+
+log_action("jsmith", "run_scenario", {"diameter_m": 0.1016, "flow_rate_m3s": 0.0005})
+
+for entry in get_audit_log(limit=10):
+    print(entry.created_at, entry.username, entry.action, entry.details)
+
+# Filter to one user's history:
+jsmith_actions = get_audit_log(username="jsmith")
+```
+
+The Config Editor page logs a field-level diff (old value → new value
+per changed YAML field, via `src.utils.yaml_diff.diff_dicts`) rather than
+just "the file changed" — see `tests/test_yaml_diff.py` for how the diff
+is computed, and the Audit Log page for how it's displayed.
+
+### Geospatial network
+
+Layers real lat/lon coordinates onto the existing Hardy Cross
+`hydraulics.network` topology (which is purely abstract — node names and
+connections, no real-world position):
+
+```python
+from src.geospatial.service import (
+    upsert_node, upsert_pipe, upsert_loop_member,
+    get_network_geometry, get_all_loops, seed_demo_network,
+)
+
+# One-call demo setup (4 nodes, 5 pipes, 2 loops, with real coordinates):
+seed_demo_network()
+
+# Or build your own:
+upsert_node("A", latitude=-6.9175, longitude=107.6191, label="Source reservoir")
+upsert_node("B", latitude=-6.9180, longitude=107.6200, label="Junction")
+upsert_pipe("AB", "A", "B", diameter_m=0.1, length_m=200.0, roughness_m=1.5e-6)
+upsert_loop_member("loop1", "AB", direction=1, sequence_order=0)
+# ... more pipes/loop members to close at least one loop ...
+
+nodes, pipes = get_network_geometry()
+loops = get_all_loops()  # returns real hydraulics.network.Loop objects
+```
+
+**PostGIS convention to watch for**: `ST_MakePoint` takes `(longitude,
+latitude)` order — the classic GIS gotcha. `upsert_node`/`get_all_nodes`
+handle this internally; you only ever pass/receive `(latitude,
+longitude)` in the conventional order.
+
+Solve hydraulically and render a colored map:
+
+```python
+from src.hydraulics.network import PipeNetwork, NetworkPipe
+from src.geospatial.map_view import build_network_map
+from src.utils.constants import WATER_DENSITY, WATER_VISCOSITY
+
+network_pipes = [
+    NetworkPipe(p.name, p.start_node, p.end_node, p.diameter_m, p.length_m, p.roughness_m)
+    for p in pipes
+]
+network = PipeNetwork(network_pipes, loops, density=WATER_DENSITY, viscosity=WATER_VISCOSITY)
+solution = network.solve({"AB": 0.005})   # must satisfy node continuity — see section 9
+
+fmap = build_network_map(nodes, pipes, flows=solution.flows)
+fmap.save("network_map.html")   # or render in Streamlit via st_folium
+```
+
+Pipes are colored by velocity against the SNI 03-6481-2000 range — blue
+under-utilized, green in range, red over — the same convention as the
+Lean Dashboard's Mura heatmap, applied spatially.
+
+### How RBAC is enforced and tested
+
+Every Streamlit page calls `require_login()` (and, on restricted pages,
+`require_role()`) from `streamlit_app/auth_helpers.py` — server-side, on
+every page load. `tests/test_streamlit_rbac.py` proves this with
+Streamlit's official `AppTest` framework: simulated logins as both
+roles, checking that Field Technician is denied on the Input/Config
+Editor/Audit Log pages and granted everywhere else, that Lead Engineer
+has full access, and that running a scenario or editing config actually
+produces an audit log entry. See `docs/design.md`'s "Enterprise Layer"
+section for what this caught (two real bugs) and what's deliberately
+*not* hardened (session expiry, login rate limiting) — flagged
+explicitly rather than silently absent.
+
+## 12. Loading scenarios from config files
 
 There are two levels of config support:
 
@@ -337,18 +530,31 @@ pipe or fluid key that doesn't exist in `pipe_config.yaml` /
 `fluid_config.yaml` raises a clear `ValueError` immediately, rather than
 failing deep inside a simulation run.
 
-## 11. Running the dashboard
+## 13. Running the dashboard
+
+Needs PostgreSQL+PostGIS reachable first (`docker compose up -d db`, or
+see [DEPLOYMENT.md](../DEPLOYMENT.md)):
 
 ```bash
 streamlit run streamlit_app/app.py
 ```
 
-Navigate: **Input** (set parameters, run) → **Compare** (scenarios loaded
-straight from `configs/*.yaml`) → **Results** (metrics, pressure curve,
-energy Sankey) → **Lean Dashboard** (Muda waste ranking + Pareto, Mura
-utilization heatmap, Muri pump-overburden alerts, across all scenarios) →
-**Economics** (CAPEX vs. OPEX lifecycle cost, adjustable assumptions,
-break-even calculation) → **About** (methodology/references).
+Sign in with one of the demo accounts (seeded automatically on first
+run): **technician** / technician123 (Field Technician, view-only) or
+**engineer** / engineer123 (Lead Engineer, full access). Change these
+before any real deployment.
+
+Navigate: **Input** (set parameters, run — *Lead Engineer only*) →
+**Compare** (scenarios loaded straight from `configs/*.yaml`) →
+**Results** (metrics, pressure curve, energy Sankey) → **Lean Dashboard**
+(Muda waste ranking + Pareto, Mura utilization heatmap, Muri pump-
+overburden alerts, across all scenarios) → **Economics** (CAPEX vs. OPEX
+lifecycle cost, adjustable assumptions, break-even calculation) →
+**Network Map** (the pipe network plotted on a real map, color-coded by
+hydraulic state) → **Config Editor** (edit the YAML that drives every
+scenario — *Lead Engineer only*, every save logged field-by-field) →
+**Audit Log** (who ran what, when — *Lead Engineer only*) → **About**
+(methodology/references).
 
 To see the Muri check in action, set `rated_power_W` on a scenario in
 `configs/scenario_config.yaml` — both shipped scenarios already have one
@@ -362,7 +568,7 @@ scenarios:
     rated_power_W: 750.0   # undersized vs. ~992 W required -> overloaded warning
 ```
 
-## 12. Generating the PDF report
+## 14. Generating the PDF report
 
 ```bash
 python -m src.reporting.build_report
@@ -387,8 +593,14 @@ generate_report(
 )
 ```
 
-## 13. Running tests
+## 15. Running tests
 
 ```bash
 pytest --maxfail=1 --disable-warnings -q
 ```
+
+Tests touching `src/auth/`, `src/audit/`, `src/geospatial/`, or
+`tests/test_streamlit_rbac.py` need PostgreSQL+PostGIS reachable — they
+skip cleanly with a clear message if none is found (`docker compose up
+-d db` to enable them locally; CI always runs them via a service
+container).

@@ -2,6 +2,9 @@
 Streamlit page: parameter input + run simulation.
 
 Stores the resulting ScenarioResult in st.session_state for the Results page.
+Restricted to the Lead Engineer role — running an ad-hoc scenario is
+exactly the "execute scenario comparisons" authority the RBAC model
+reserves for that role.
 """
 
 import sys
@@ -10,12 +13,21 @@ from pathlib import Path
 import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from auth_helpers import require_login, require_role, render_user_badge
+from src.auth.models import Role
+from src.audit.service import log_action
 from src.simulation.scenario import run_simulation
 from src.utils.constants import WATER_DENSITY, WATER_VISCOSITY, PVC_ROUGHNESS, STEEL_ROUGHNESS
 from src.hydraulics.fluid_properties import water_vapor_pressure
 
 st.set_page_config(page_title="Input — Hydraulic Simulator", page_icon="🧮", layout="wide")
+
+user = require_login()
+require_role(user, Role.LEAD_ENGINEER, "the Input page")
+render_user_badge(user)
+
 st.title("Hydraulic Distribution Simulator")
 st.caption("Set parameters in the sidebar, then click **Run Analysis**.")
 
@@ -126,6 +138,17 @@ if run_clicked:
             label=f"{diameter_mm:.0f} mm {material}",
         )
         st.session_state["scenario_result"] = result
+        log_action(user.username, "run_scenario", {
+            "diameter_mm": diameter_mm,
+            "length_m": length_m,
+            "material": material,
+            "flow_rate_Ls": flow_rate_Ls,
+            "static_head_m": static_head_m,
+            "eta_pump": eta_pump,
+            "eta_motor": eta_motor,
+            "rated_power_W": rated_power_W,
+            "npsh_enabled": enable_npsh,
+        })
         st.success("✅ Simulation complete. See the **Results** page in the sidebar.")
 
         col1, col2, col3 = st.columns(3)
@@ -136,13 +159,17 @@ if run_clicked:
         if result.velocity_warning:
             st.warning(result.velocity_warning)
         if result.pump_load_warning:
-            st.error(result.pump_load_warning) if "overloaded" in result.pump_load_warning.lower() \
-                else st.warning(result.pump_load_warning)
+            if "overloaded" in result.pump_load_warning.lower():
+                st.error(result.pump_load_warning)
+            else:
+                st.warning(result.pump_load_warning)
         if result.npsh is not None:
             st.metric("NPSH Available", f"{result.npsh.npsh_available_m:.2f} m")
             if result.npsh_warning:
-                st.error(result.npsh_warning) if "cavitation" in result.npsh_warning.lower() \
-                    else st.warning(result.npsh_warning)
+                if "cavitation" in result.npsh_warning.lower():
+                    st.error(result.npsh_warning)
+                else:
+                    st.warning(result.npsh_warning)
 
     except ValueError as e:
         # Poka-Yoke: surface validation failures as a clear, actionable message

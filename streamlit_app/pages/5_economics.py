@@ -17,14 +17,19 @@ import plotly.graph_objects as go
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
+sys.path.insert(0, str(PROJECT_ROOT / "streamlit_app"))
 
+from auth_helpers import require_login, render_user_badge
 from src.simulation.config_loader import load_pipeline, load_economics_config
 from src.economics.scenario_economics import (
-    EconomicAssumptions, compare_lifecycle_costs, build_economic_assumptions_for_diameter,
+    compare_lifecycle_costs,
 )
-from src.economics.lcca import evaluate_lifecycle_cost
 
 st.set_page_config(page_title="Economics — Hydraulic Simulator", page_icon="💰", layout="wide")
+
+user = require_login()
+render_user_badge(user)
+
 st.title("💰 Lifecycle Cost Analysis (LCCA)")
 st.caption(
     "Compares pipe/pump CAPEX against the present value of electricity "

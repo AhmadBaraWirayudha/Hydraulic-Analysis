@@ -44,10 +44,26 @@ flowchart TD
     R --> RP["reporting/<br/>static matplotlib"]
     R --> Lean["Lean 3M analysis"]
     R --> Econ["economics/<br/>LCCA: CAPEX vs. OPEX"]
+    R --> ML["machine_learning/<br/>predictive maintenance (synthetic data demo)"]
+    ML --> UI
     Econ --> UI
 
-    P --> UI["Streamlit Dashboard<br/>Input · Compare · Results ·<br/>Lean Dashboard · About"]
+    P --> UI["Streamlit Dashboard<br/>Input · Compare · Results · Lean Dashboard ·<br/>Economics · Network Map · Config Editor ·<br/>Audit Log · About"]
     RP --> PDF["reports/final_report.pdf"]
+
+    subgraph Enterprise["Enterprise Layer"]
+        AUTH["auth/<br/>RBAC: Field Technician / Lead Engineer"]
+        AUDIT["audit/<br/>who · when · what changed"]
+        GEOSP["geospatial/<br/>PostGIS nodes/pipes/loops + Folium map"]
+        PGDB[("PostgreSQL + PostGIS")]
+        AUTH --> PGDB
+        AUDIT --> PGDB
+        GEOSP --> PGDB
+    end
+
+    AUTH -->|require_login / require_role| UI
+    UI -->|log_action on run/edit| AUDIT
+    GEOSP -->|build_network_map| UI
 
     Lean --> Muda["Muda — waste<br/>(exergy + Pareto)"]
     Lean --> Mura["Mura — unevenness<br/>(utilization heatmap)"]
@@ -102,6 +118,100 @@ itself feeds back into both the dashboard and the report.
   catches and skips unphysical tail draws rather than crashing a 2000-run
   batch over one bad sample.
 
+## Enterprise Layer: RBAC, Audit, Geospatial
+
+### Why a real database, not just session state
+
+RBAC and audit logging only mean something if they survive a server
+restart and can't be bypassed by editing client-side state — so
+`src/auth/`, `src/audit/`, and `src/geospatial/` are backed by
+PostgreSQL (`src/db.py`), not just `st.session_state`. Session state
+still holds the *current* logged-in user for the duration of a browser
+session (`require_login()` checks it on every page), but the
+authoritative records — who has which role, what happened when — live in
+the database.
+
+### Why PostGIS specifically, and not just lat/lon columns
+
+Plain `DOUBLE PRECISION` lat/lon columns would work for storing point
+coordinates, but PostGIS's `GEOMETRY` type and spatial functions
+(`ST_MakeLine`, `ST_Y`/`ST_X`, GIST spatial indexes) are what make the
+*pipe* geometry (a line between two nodes) a first-class queryable object
+rather than something computed ad-hoc in Python every time. This matters
+more as the network grows — a real GIS query like "which pipes pass
+within 50m of this point" is a one-line PostGIS query against an indexed
+column, not a full table scan with manual distance math.
+
+### Why loop topology is a database table, not hardcoded
+
+Early in development, the Hardy Cross loop definitions (`Loop`/
+`LoopMember` — see `hydraulics/network.py`) were hardcoded directly in
+the Streamlit page that needed them. That's fine for a fixed demo
+network, but it means the *topology itself* — which pipes form which
+loops — isn't really "data," it's code, which contradicts this project's
+config-driven philosophy everywhere else. `network_loops` persists this
+properly: `geospatial.service.get_all_loops()` returns real
+`hydraulics.network.Loop` objects straight from the database, ready to
+hand to `PipeNetwork.solve()`. The tradeoff: this repo's current Network
+Map page still hardcodes the *initial flow guess* for the Hardy Cross
+solver to its one demo topology's pipe names (`12`, `13`, `23`, `24`,
+`34`) — extending to an arbitrary network shape would need either a
+proper spanning-tree-based continuity solver or a UI for the user to
+supply their own valid initial guess; out of scope for what this
+demonstrates today (see Extension points below).
+
+### Why bcrypt, and what's deliberately *not* hardened
+
+Passwords are hashed with bcrypt (`src/auth/service.py`) — salted
+automatically, adaptive cost factor, no plaintext ever stored or
+compared. What this demo does *not* implement: constant-time username
+lookup (a sufficiently motivated attacker could in principle distinguish
+"wrong password" from "no such user" by timing, since the database
+lookup short-circuits before the hash comparison when the username
+doesn't exist), session expiry/timeout, rate limiting on login attempts,
+or password complexity requirements. None of these are hard to add, but
+none were necessary to demonstrate the actual ask (role-gated access +
+traceability) — flagged here rather than silently absent.
+
+### How RBAC is actually enforced (and how this is tested)
+
+Every Streamlit page calls `require_login()` (renders a login form and
+`st.stop()`s if not authenticated) and, on restricted pages,
+`require_role()` (shows an access-denied message and `st.stop()`s if the
+signed-in user's role doesn't match) — both in
+`streamlit_app/auth_helpers.py`. This is enforced server-side on every
+page load, not just hidden via UI — there's no client-controllable state
+that bypasses it.
+
+This is verified with Streamlit's official `AppTest` framework
+(`tests/test_streamlit_rbac.py`), which actually runs each page script
+and simulates real login form submissions — not just a code-reading
+claim that RBAC "should" work. Writing these tests caught two real,
+separate production bugs that no amount of `curl`-based HTTP-status
+smoke testing could have found, since Streamlit serves its static HTML
+shell with a 200 regardless of what the page's Python script does (the
+script only runs, and can only fail, over the websocket connection after
+the page loads):
+
+1. A bare ternary expression used as a statement
+   (`cols[1].error(...) if cond else cols[1].warning(...)`, with no
+   assignment) silently triggers Streamlit's "magic" auto-display
+   feature, which tried to introspect the source to label the result and
+   crashed on the multi-line, backslash-continued expression. Fixed by
+   rewriting as a proper `if/else` block (also just better style).
+2. A pandas `DataFrame` column built from a list of dicts where some
+   entries had `pump_load_warning: None` and others had a string value
+   silently became a `float64` column with `None` coerced to `NaN` —
+   and `bool(float('nan'))` is `True` in Python, so a plain truthiness
+   check (`if row.get("pump_load_warning"):`) incorrectly entered the
+   "there's a warning" branch and crashed calling `.lower()` on a float.
+   Fixed by checking `isinstance(value, str)` instead of truthiness.
+
+Both bugs had been silently present since the pages were first written
+— `tests/test_streamlit_rbac.py` exists specifically because reviewing
+the code by eye, or checking that pages return HTTP 200, wasn't enough to
+catch either one.
+
 ## Lean / Six Sigma Integration
 
 | Lean concept | Implementation |
@@ -149,7 +259,22 @@ section 8 mirrors this with the same underlying data.
   `swamee_jain.py` (or a new sibling module) and update
   `friction.darcy_friction_factor`'s dispatch.
 - Add new fitting types: extend `head_loss.K_FACTORS`.
-- Extend Mura beyond a single-pipe-per-scenario model: model an actual
-  branching network (multiple pipe segments sharing a source) and feed
-  per-segment utilization into `utilization_heatmap_figure` for a true
-  network-balance view, rather than comparing independent scenarios.
+- The Network Map (`6_network_map.py`) now models an actual branching
+  network via `hydraulics.network`'s Hardy Cross solver and PostGIS —
+  partially fulfilling what was previously listed here as "extend Mura
+  beyond a single-pipe-per-scenario model." What's still specific to the
+  one demo topology: the page's *initial flow guess* hardcodes the demo
+  network's exact pipe names. A general version would need either a
+  proper spanning-tree-based continuity solver (derive a valid initial
+  guess from arbitrary topology + external demands automatically) or a
+  UI for the user to supply their own.
+- Auth hardening: session expiry/timeout, login rate limiting, constant-
+  time username lookup, password complexity rules — see "Why bcrypt, and
+  what's deliberately not hardened" above for what's intentionally absent
+  from this demo and why.
+- The Config Editor writes directly to `configs/*.yaml` on disk, which
+  is fine for `docker compose` (volume-mounted, durable) but doesn't
+  survive a redeploy on ephemeral-filesystem platforms (Streamlit
+  Community Cloud) — moving config storage into the database (with YAML
+  export/import for the config-driven-pipeline modules that expect files)
+  would remove that platform-dependent gap.

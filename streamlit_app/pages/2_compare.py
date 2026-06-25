@@ -13,11 +13,16 @@ import streamlit as st
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
+sys.path.insert(0, str(PROJECT_ROOT / "streamlit_app"))
 
+from auth_helpers import require_login, render_user_badge
 from src.simulation.config_loader import load_pipeline
 from src.plots.plot_efficiency import head_loss_comparison_figure
 
 st.set_page_config(page_title="Compare — Hydraulic Simulator", page_icon="📐", layout="wide")
+
+user = require_login()
+render_user_badge(user)
 st.title("📐 Config-Driven Scenario Comparison")
 st.caption(
     "Scenarios below are loaded directly from `configs/pipe_config.yaml`, "
@@ -51,14 +56,14 @@ st.dataframe(
 )
 
 for _, row in summary.iterrows():
-    if row["velocity_warning"]:
+    if isinstance(row["velocity_warning"], str):
         st.warning(f"**{row['scenario']}**: {row['velocity_warning']}")
-    if row.get("pump_load_warning"):
+    if isinstance(row.get("pump_load_warning"), str):
         if "overloaded" in row["pump_load_warning"].lower():
             st.error(f"**{row['scenario']}**: {row['pump_load_warning']}")
         else:
             st.warning(f"**{row['scenario']}**: {row['pump_load_warning']}")
-    if row.get("npsh_warning"):
+    if isinstance(row.get("npsh_warning"), str):
         if "cavitation" in row["npsh_warning"].lower():
             st.error(f"**{row['scenario']}**: {row['npsh_warning']}")
         else:

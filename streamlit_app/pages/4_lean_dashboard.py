@@ -18,11 +18,17 @@ import streamlit as st
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
+sys.path.insert(0, str(PROJECT_ROOT / "streamlit_app"))
 
+from auth_helpers import require_login, render_user_badge
 from src.simulation.config_loader import load_pipeline
 from src.plots.pareto import pareto_loss_figure, utilization_heatmap_figure, waste_ranking_figure
 
 st.set_page_config(page_title="Lean Dashboard — Hydraulic Simulator", page_icon="🎯", layout="wide")
+
+user = require_login()
+render_user_badge(user)
+
 st.title("🎯 Lean Dashboard: Muda / Mura / Muri")
 st.caption(
     "Scenarios loaded from `configs/*.yaml`. This page applies the three "
@@ -56,8 +62,10 @@ for name, r in results.items():
                     delta=f"{r.pump.shaft_power_W:.2f} W / {r.scenario.rated_power_W:.2f} W")
     if r.pump_load_warning:
         any_muri = True
-        cols[1].error(r.pump_load_warning) if "overloaded" in r.pump_load_warning.lower() \
-            else cols[1].warning(r.pump_load_warning)
+        if "overloaded" in r.pump_load_warning.lower():
+            cols[1].error(r.pump_load_warning)
+        else:
+            cols[1].warning(r.pump_load_warning)
     else:
         cols[1].success("Within safe operating margin (<80% of rated capacity).")
 if not any_muri:

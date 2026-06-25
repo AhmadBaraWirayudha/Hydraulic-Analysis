@@ -9,10 +9,16 @@ from pathlib import Path
 import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from auth_helpers import require_login, render_user_badge
 from src.plots.sankey import energy_flow_sankey
 
 st.set_page_config(page_title="Results — Hydraulic Simulator", page_icon="📊", layout="wide")
+
+user = require_login()
+render_user_badge(user)
+
 st.title("📊 Simulation Results")
 
 result = st.session_state.get("scenario_result")
