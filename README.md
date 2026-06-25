@@ -1,8 +1,7 @@
 # Hydraulic Distribution Analysis Toolkit
 
 A modular, config-driven Python package for analyzing water distribution
-pipelines using the **Darcy–Weisbach** and **Swamee–Jain (1976)** equations
-— originally developed to evaluate pipe-diameter choices for the **Citra
+pipelines using the **Darcy–Weisbach** and **Swamee–Jain (1976)** equations originally developed to evaluate pipe-diameter choices for the **Citra
 Srie Pradita** housing estate, and rebuilt here as a reusable engineering
 module rather than a one-off script. Now with the governance layer a
 multi-engineer team actually needs: **role-based access control**, **audit
