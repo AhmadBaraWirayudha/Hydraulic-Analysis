@@ -1,0 +1,378 @@
+Metadata-Version: 2.4
+Name: hydraulic-analysis
+Version: 0.1.0
+Summary: Modular Darcy-Weisbach / Swamee-Jain hydraulic distribution analysis toolkit with Monte Carlo sensitivity, exergy analysis, and a Streamlit dashboard.
+Author: Ahmad Bara Wirayudha
+License: MIT
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: numpy>=1.24
+Requires-Dist: scipy>=1.10
+Requires-Dist: pandas>=2.0
+Requires-Dist: matplotlib>=3.7
+Requires-Dist: plotly>=5.18
+Requires-Dist: pint>=0.22
+Requires-Dist: pyyaml>=6.0
+Requires-Dist: reportlab>=4.0
+Requires-Dist: Pillow>=10.0
+Requires-Dist: scikit-learn>=1.3
+Provides-Extra: dashboard
+Requires-Dist: streamlit>=1.32; extra == "dashboard"
+Provides-Extra: dev
+Requires-Dist: pytest>=7.4; extra == "dev"
+Requires-Dist: pytest-cov>=4.1; extra == "dev"
+Requires-Dist: ruff>=0.4; extra == "dev"
+Dynamic: license-file
+
+# Hydraulic Distribution Analysis Toolkit
+
+A modular, config-driven Python package for analyzing water distribution
+pipelines using the **Darcy–Weisbach** and **Swamee–Jain (1976)** equations
+— originally developed to evaluate pipe-diameter choices for the **Citra
+Srie Pradita** housing estate, and rebuilt here as a reusable engineering
+module rather than a one-off script.
+
+## Features
+
+- **Hydraulic calculations**: friction factor (laminar/turbulent dispatch),
+  Reynolds number, major (Darcy-Weisbach) and minor (K-factor) head losses,
+  pump shaft power, and **exergy destruction** (Gouy-Stodola theorem) for
+  irreversibility/waste analysis.
+- **Explicit Swamee-Jain design equations**: solve directly for required
+  diameter or achievable flow rate given a target head loss — no iterative
+  Colebrook-White solving needed.
+- **Temperature-dependent fluid properties**: Andrade viscosity and
+  Antoine vapor-pressure equations, with coefficients fitted (not guessed)
+  against standard reference data for water — see
+  `src/hydraulics/fluid_properties.py` for fit methodology and accuracy.
+  Generic fitting utilities are included so you can calibrate either
+  equation for other fluids.
+- **NPSH (cavitation) check**: `src/hydraulics/npsh.py` computes NPSH
+  available and, given a pump's NPSHr, flags cavitation risk (<100%
+  margin) or a thin margin (<120%) — another Poka-Yoke-style safety check,
+  optional per scenario.
+- **VFD / electrical analysis**: `src/hydraulics/electrical.py` —
+  pump affinity laws (flow ∝ N, head ∝ N², power ∝ N³) for variable-speed
+  energy optimization; three-phase apparent/real/reactive power and power
+  factor; NEMA-defined voltage unbalance percentage with a Poka-Yoke check
+  against NEMA's 5% operating limit. (The derating-factor-vs-unbalance
+  *curve* itself is published as a graph in NEMA MG1-14.36, not a formula,
+  and varies by motor class/load — this module gives you an interpolation
+  utility to apply your own motor's published curve rather than a
+  one-size-fits-all guess.)
+- **Lifecycle Cost Analysis (LCCA)**: `src/economics/` compares pipe/pump
+  CAPEX against the present value of electricity OPEX over a configurable
+  horizon — a financial-dashboard view of the same hydraulic tradeoff
+  (smaller pipe = cheaper upfront, dramatically more expensive to run).
+  No real-world prices are hardcoded; every cost input is explicitly
+  user-supplied (see `configs/economics_config.yaml`). Provides factual
+  present-value arithmetic only, not investment recommendations.
+- **Predictive maintenance (ML demo)**: `src/machine_learning/` —
+  Random Forest regression for forecasting pipe roughness degradation,
+  plus two complementary anomaly-detection approaches (a transparent SPC
+  control chart, and an Isolation Forest for multivariate patterns).
+  **Read the module docstrings before trusting any number here**: training
+  data is synthetic — the hydraulic baseline is real (computed via this
+  project's own Darcy-Weisbach engine), but the degradation trend, sensor
+  noise, and anomalies are fabricated for demonstration. This shows the ML
+  *pattern*, not a validated predictive tool; swap in real inspection/
+  sensor data for actual use.
+- **Network analysis (Hardy Cross)**: `src/hydraulics/network.py` solves
+  flow distribution in closed-loop pipe networks — multiple interconnected
+  pipes, not just one line. The core loop-balancing solver is verified
+  exactly against a published worked example (Wikipedia's Hardy Cross
+  method article), including matching its stated intermediate iteration,
+  not just checking self-consistency at convergence.
+- **Water hammer (transient surge) analysis**: `src/hydraulics/transients.py`
+  — Korteweg wave speed + Joukowsky surge pressure, with rapid-vs-slow
+  valve-closure classification and a Poka-Yoke check against the pipe's
+  rated pressure. Wave-speed formula validated against its rigid-pipe
+  limit (reduces exactly to the unconfined speed of sound in water) and
+  literature-typical wave speeds for steel/PVC pipe.
+- **Simulation layer**: config-driven scenarios (`configs/*.yaml`) — cross-
+  referenced and validated by `src/simulation/config_loader.py`, so adding
+  a scenario, pipe, or fluid means editing YAML, not Python — plus Monte
+  Carlo uncertainty propagation and one-at-a-time sensitivity sweeps with
+  normalized elasticity coefficients.
+- **Visualization**: pressure-vs-distance curves, head-loss/efficiency
+  sweep plots, Monte Carlo histograms, and an energy-flow **Sankey diagram**
+  that frames frictional exergy loss as Lean *Muda* (waste).
+- **Poka-Yoke validation**: every calculation path validates inputs first
+  (positive diameter/length/flow, density/viscosity sanity, roughness <
+  diameter, pump efficiency in (0,1]) and raises clear `ValueError`s before
+  any physics runs. Velocity is also checked against the **SNI
+  03-6481-2000** recommended range (0.9–2.0 m/s).
+- **Lean Six Sigma 3M analysis**: *Muda* (waste) via exergy destruction +
+  a Pareto chart of loss sources (friction vs. each fitting); *Mura*
+  (unevenness) via a cross-scenario utilization heatmap; *Muri*
+  (overburden) via a configurable pump-rated-capacity check that flags
+  >80%/100% load. All three are brought together on a dedicated **Lean
+  Dashboard** Streamlit page and in the PDF report.
+- **Interactive dashboard**: a Streamlit app (Input → Compare → Results →
+  About) for non-programmers to run scenarios and explore results.
+- **PDF report generation**: `src/reporting/` assembles a full engineering
+  report (`reports/final_report.pdf`) — methodology, scenario comparison
+  table, head-loss/diameter-sensitivity/pressure-profile/energy-balance
+  figures, Monte Carlo uncertainty section, and Lean/Poka-Yoke notes —
+  directly from the current `configs/*.yaml`, with no hardcoded values.
+- **Tested & CI'd**: pytest unit tests for every formula module, GitHub
+  Actions CI (lint + test on Python 3.10/3.11), Dockerized Streamlit app.
+
+## Project Structure
+
+```
+hydraulic-analysis/
+├── .devcontainer/             # VS Code dev container (Python, ruff, Jupyter)
+├── configs/                 # YAML scenario/pipe/fluid/economics configs
+├── data/                     # raw/processed input data
+├── docs/                     # design notes, user guide
+├── notebooks/                # exploratory/demo notebooks
+├── reports/                  # generated report figures/PDFs
+│   ├── figures/              # PNG figures embedded in the PDF report
+│   └── final_report.pdf      # generated by src/reporting/build_report.py
+├── src/
+│   ├── hydraulics/           # friction.py, swamee_jain.py, head_loss.py, pump.py,
+│   │                         # fluid_properties.py, npsh.py, electrical.py,
+│   │                         # network.py, transients.py
+│   ├── simulation/           # scenario.py, monte_carlo.py, sensitivity.py, config_loader.py
+│   ├── economics/            # lcca.py, scenario_economics.py
+│   ├── machine_learning/     # synthetic_data.py, degradation_model.py, anomaly_detection.py
+│   ├── plots/                # plot_pressure.py, plot_efficiency.py, sankey.py, pareto.py (interactive, for Streamlit)
+│   ├── reporting/            # figures.py, build_report.py (static, for the PDF report)
+│   └── utils/                # constants.py, units.py, validation.py
+├── streamlit_app/             # app.py + pages/{1_input,2_compare,3_results,4_lean_dashboard,5_economics,6_about}.py + Dockerfile
+└── tests/                     # pytest suite
+```
+
+## Installation
+
+```bash
+git clone <repo-url>
+cd hydraulic-analysis
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+Or open in VS Code with the **Dev Containers** extension and "Reopen in
+Container" — `.devcontainer/` provides Python, ruff linting, and Jupyter
+pre-installed (separate from `streamlit_app/Dockerfile`, which builds the
+production dashboard image rather than a dev environment).
+
+## Usage
+
+### As a library
+
+```python
+from src.simulation.scenario import run_simulation
+
+result = run_simulation(
+    diameter_m=0.1016,        # 4 inch pipe
+    flow_rate_m3s=0.0005,     # 0.5 L/s
+    length_m=100.0,
+    fittings={"elbow_90_standard": 4, "gate_valve_open": 1},
+    eta_pump=0.75,
+    eta_motor=0.90,
+)
+
+print(f"Pressure drop: {result.pressure_drop:.1f} Pa")
+print(f"Pump shaft power: {result.pump.shaft_power_W:.1f} W")
+print(f"Exergy destroyed: {result.exergy.exergy_destruction_W:.2f} W")
+if result.velocity_warning:
+    print(result.velocity_warning)
+```
+
+### Comparing pipe sizes (sensitivity sweep)
+
+```python
+import numpy as np
+from src.simulation.scenario import PipeScenario
+from src.simulation.sensitivity import sweep_parameter
+
+base = PipeScenario(diameter_m=0.1, flow_rate_m3s=0.0005, length_m=100.0)
+df = sweep_parameter(base, "diameter_m", np.linspace(0.0127, 0.1016, 10))
+print(df[["diameter_m", "total_loss_m", "pressure_drop_Pa"]])
+```
+
+### Monte Carlo uncertainty
+
+```python
+from src.simulation.monte_carlo import run_monte_carlo, ParameterUncertainty
+
+unc = [ParameterUncertainty("flow_rate_m3s", "triangular",
+                             {"low": 0.0003, "mode": 0.0005, "high": 0.0009})]
+mc_df = run_monte_carlo(base, unc, n_samples=2000)
+print(mc_df["total_loss_m"].describe())
+```
+
+### Temperature-dependent viscosity & NPSH (cavitation)
+
+```python
+from src.hydraulics.fluid_properties import water_viscosity, water_vapor_pressure
+from src.simulation.scenario import run_simulation
+
+# Hot process water at 60 degC — viscosity and vapor pressure both shift
+viscosity_60C = water_viscosity(333.15)
+vapor_pressure_60C = water_vapor_pressure(333.15)
+
+result = run_simulation(
+    diameter_m=0.0508, flow_rate_m3s=0.0005, length_m=100.0,
+    viscosity=viscosity_60C,
+    suction_pressure_Pa=101_325,      # atmospheric, open suction tank
+    vapor_pressure_Pa=vapor_pressure_60C,
+    inlet_elevation_m=-1.5,            # 1.5 m suction lift
+    npsh_required_m=4.0,               # from the pump's manufacturer curve
+)
+print(result.npsh.npsh_available_m, result.npsh_warning)
+```
+
+### VFD energy optimization (pump affinity laws)
+
+```python
+from src.hydraulics.electrical import apply_affinity_laws, speed_ratio_for_target_flow
+
+# Pump's known performance at full speed
+Q_ref, H_ref, P_ref = 0.01, 20.0, 1000.0   # m3/s, m, W
+
+# What if demand drops to 70% of design flow?
+ratio = speed_ratio_for_target_flow(Q_ref, flow_target_m3s=0.7 * Q_ref)
+result = apply_affinity_laws(Q_ref, H_ref, P_ref, speed_ratio=ratio)
+print(f"Speed: {ratio:.0%}, Power: {result.power_W:.1f} W "
+      f"({result.power_W/P_ref:.0%} of full-speed power)")
+```
+
+See `notebooks/vfd_energy_optimization.ipynb` for the full cube-law savings analysis.
+
+### Lifecycle cost analysis (LCCA)
+
+```python
+from src.simulation.config_loader import load_pipeline, load_economics_config
+from src.economics.scenario_economics import compare_lifecycle_costs
+
+pipeline = load_pipeline(config_dir="configs")
+econ_config = load_economics_config(config_dir="configs")
+
+df = compare_lifecycle_costs(pipeline["results"], econ_config=econ_config)
+print(df[["scenario", "capex", "present_value_opex", "total_lifecycle_cost"]])
+# -> the 4" pipe costs more upfront but is dramatically cheaper over 20 years
+```
+
+### Network analysis (Hardy Cross)
+
+```python
+from src.hydraulics.network import PipeNetwork, NetworkPipe, Loop, LoopMember
+from src.utils.constants import WATER_DENSITY, WATER_VISCOSITY, PVC_ROUGHNESS
+
+pipes = [
+    NetworkPipe("12", "1", "2", diameter_m=0.10, length_m=200.0, roughness_m=PVC_ROUGHNESS),
+    NetworkPipe("13", "1", "3", diameter_m=0.075, length_m=250.0, roughness_m=PVC_ROUGHNESS),
+    NetworkPipe("23", "2", "3", diameter_m=0.05, length_m=150.0, roughness_m=PVC_ROUGHNESS),
+    NetworkPipe("24", "2", "4", diameter_m=0.075, length_m=200.0, roughness_m=PVC_ROUGHNESS),
+    NetworkPipe("34", "3", "4", diameter_m=0.10, length_m=200.0, roughness_m=PVC_ROUGHNESS),
+]
+loop123 = Loop("123", [LoopMember("12", +1), LoopMember("23", +1), LoopMember("13", -1)])
+loop234 = Loop("234", [LoopMember("23", -1), LoopMember("24", +1), LoopMember("34", -1)])
+network = PipeNetwork(pipes, [loop123, loop234], density=WATER_DENSITY, viscosity=WATER_VISCOSITY)
+
+initial_flows = {"12": 0.030, "13": 0.020, "23": 0.0, "24": 0.030, "34": 0.020}
+result = network.solve(initial_flows)   # always check_node_continuity first!
+print(result.flows, result.converged)
+```
+
+See `notebooks/network_and_transients.ipynb` — the core solver is verified
+exactly against a published worked example before being trusted on real
+pipe geometry.
+
+### Water hammer (transient surge)
+
+```python
+from src.hydraulics.transients import evaluate_water_hammer
+from src.utils.constants import WATER_BULK_MODULUS_PA, STEEL_YOUNGS_MODULUS_PA, WATER_DENSITY
+
+result = evaluate_water_hammer(
+    bulk_modulus_Pa=WATER_BULK_MODULUS_PA, density=WATER_DENSITY,
+    diameter_m=0.1016, wall_thickness_m=0.006, youngs_modulus_Pa=STEEL_YOUNGS_MODULUS_PA,
+    length_m=200.0, delta_v_m_s=2.0, closure_time_s=0.05,   # fast valve closure
+    initial_pressure_Pa=300_000,
+)
+print(result.peak_pressure_Pa, result.is_rapid_closure)
+```
+
+### Predictive maintenance (ML demo — synthetic data, read the caveats)
+
+```python
+from src.machine_learning.synthetic_data import generate_synthetic_roughness_degradation
+from src.machine_learning.degradation_model import fit_degradation_model, predict_maintenance_threshold_day
+
+df = generate_synthetic_roughness_degradation(diameter_m=0.0508, flow_rate_m3s=0.0005, length_m=100.0)
+model_result = fit_degradation_model(df["day"], df["roughness_m"])
+threshold_day = predict_maintenance_threshold_day(
+    model_result, roughness_threshold_m=df["roughness_m"].iloc[0] * 1.5,
+)
+print(f"Test R2: {model_result.test_r2:.3f}, predicted maintenance trigger: day {threshold_day}")
+```
+
+See `notebooks/predictive_maintenance.ipynb` for the full degradation
+forecasting + anomaly detection (SPC vs. Isolation Forest) demonstration.
+
+### Config-driven pipeline (no hardcoded values)
+
+```python
+from src.simulation.config_loader import load_pipeline
+
+pipeline = load_pipeline(config_dir="configs")
+print(pipeline["summary"])  # every scenario in scenario_config.yaml, run and compared
+```
+
+### Generate the PDF report
+
+```bash
+python -m src.reporting.build_report
+```
+
+Produces `reports/final_report.pdf` (methodology, scenario comparison,
+diameter sensitivity, pressure profile, exergy/energy balance, and Monte
+Carlo uncertainty sections) plus the supporting PNGs in `reports/figures/`
+— regenerate any time `configs/*.yaml` changes.
+
+### Dashboard
+
+```bash
+streamlit run streamlit_app/app.py
+```
+
+Or via Docker:
+
+```bash
+docker build -t hydraulic-dashboard -f streamlit_app/Dockerfile .
+docker run -p 8501:8501 hydraulic-dashboard
+```
+
+## Testing
+
+```bash
+pytest --maxfail=1 --disable-warnings -q
+```
+
+## Method & References
+
+- Darcy-Weisbach equation for major head loss; K-factor method for minor losses.
+- Swamee, P.K. & Jain, A.K. (1976). *Explicit equations for pipe flow
+  problems.* J. Hydraul. Div., ASCE, 102(5), 657–664.
+- Bejan, A. (2016). *Advanced Engineering Thermodynamics.* Wiley — Gouy-Stodola theorem.
+- SNI 03-6481-2000 / SNI 03-7065-2005 — Indonesian plumbing system standards.
+
+See `docs/design.md` for the full architecture rationale and `docs/user_guide.md`
+for a walkthrough.
+
+## License
+
+MIT — see `LICENSE`.
+
+---
+
+*Developed an engineering-grade hydraulic distribution analysis tool in
+Python. Implemented Darcy–Weisbach and Swamee–Jain calculations, pump
+power/exergy evaluation, and Monte Carlo sensitivity analysis. Built
+interactive dashboards (Streamlit) and Lean Six Sigma-style waste analysis
+(Muda/Mura/Muri) for pipeline efficiency and maintenance planning.*

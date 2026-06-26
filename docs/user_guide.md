@@ -260,6 +260,47 @@ residuals = network.check_node_continuity(initial_flows, external_flow={"1": 0.0
 result = network.solve(initial_flows)
 ```
 
+### Constructing a valid initial guess automatically
+
+Hand-deriving a continuity-satisfying initial flow gets tedious beyond a
+handful of pipes, and a wrong one silently converges to a wrong answer
+(`check_node_continuity` only tells you *if* it's wrong, not what a
+correct one would be). `compute_initial_flows_spanning_tree` builds one
+automatically for *any connected* topology, from just the external
+supply/demand at each node:
+
+```python
+from src.hydraulics.network import compute_initial_flows_spanning_tree
+
+# Works for any pipe-like objects with .name/.start_node/.end_node —
+# NetworkPipe, geospatial.models.GeoPipe, or your own.
+initial_flows = compute_initial_flows_spanning_tree(
+    pipes, external_flow={"1": 0.05, "4": -0.05},  # unlisted nodes default to 0
+)
+result = network.solve(initial_flows)  # equivalent: network.compute_initial_flows(...)
+```
+
+How it works: builds a spanning tree of the network graph via BFS from
+an arbitrary root; pipes *not* in the tree ("chords") start at exactly
+zero flow (the standard Hardy Cross starting point — chords are exactly
+where the independent loops live, which is what Hardy Cross iteration
+will adjust); tree-edge flows are solved in closed form by
+back-substitution from the leaves inward, since each node's entire
+subtree's net demand must flow through its one tree connection (all
+chords being zero leaves no other path). Raises `ValueError` if the
+network isn't fully connected, if external flows don't sum to ~0 (mass
+must balance overall), or if `external_flow` references a node that
+isn't in any pipe.
+
+This and a hand-crafted guess provably reach the *same* answer — see
+`tests/test_network.py::test_spanning_tree_and_hand_crafted_guess_converge_to_same_solution`,
+which solves the same network from both and checks the converged flows
+match to floating-point precision. The Network Map dashboard page
+(section 11 below) uses this directly, reading external flows from each
+node's persisted `external_flow_m3s` rather than any hardcoded pipe
+names — it works for whatever topology is actually stored, not just this
+project's one demo shape.
+
 The core loop-balancing algorithm (`hardy_cross_solve`) is generic — it
 accepts any monotonic head-loss law via a `head_loss_fn(pipe_name, |Q|)`
 callback, not just Darcy-Weisbach, mirroring how the method was
@@ -449,19 +490,24 @@ latitude)` order — the classic GIS gotcha. `upsert_node`/`get_all_nodes`
 handle this internally; you only ever pass/receive `(latitude,
 longitude)` in the conventional order.
 
-Solve hydraulically and render a colored map:
+Each node also persists its own `external_flow_m3s` (net supply/demand)
+— `upsert_node(..., external_flow_m3s=0.010)` for a 10 L/s source, for
+instance. Solve hydraulically (initial flow guess built automatically,
+for any connected topology — see section 9) and render a colored map:
 
 ```python
-from src.hydraulics.network import PipeNetwork, NetworkPipe
+from src.hydraulics.network import PipeNetwork, NetworkPipe, compute_initial_flows_spanning_tree
 from src.geospatial.map_view import build_network_map
+from src.geospatial.service import get_external_flows
 from src.utils.constants import WATER_DENSITY, WATER_VISCOSITY
 
 network_pipes = [
     NetworkPipe(p.name, p.start_node, p.end_node, p.diameter_m, p.length_m, p.roughness_m)
     for p in pipes
 ]
+initial_flows = compute_initial_flows_spanning_tree(network_pipes, get_external_flows())
 network = PipeNetwork(network_pipes, loops, density=WATER_DENSITY, viscosity=WATER_VISCOSITY)
-solution = network.solve({"AB": 0.005})   # must satisfy node continuity — see section 9
+solution = network.solve(initial_flows)
 
 fmap = build_network_map(nodes, pipes, flows=solution.flows)
 fmap.save("network_map.html")   # or render in Streamlit via st_folium
@@ -475,15 +521,22 @@ Lean Dashboard's Mura heatmap, applied spatially.
 
 Every Streamlit page calls `require_login()` (and, on restricted pages,
 `require_role()`) from `streamlit_app/auth_helpers.py` — server-side, on
-every page load. `tests/test_streamlit_rbac.py` proves this with
-Streamlit's official `AppTest` framework: simulated logins as both
-roles, checking that Field Technician is denied on the Input/Config
-Editor/Audit Log pages and granted everywhere else, that Lead Engineer
-has full access, and that running a scenario or editing config actually
-produces an audit log entry. See `docs/design.md`'s "Enterprise Layer"
-section for what this caught (two real bugs) and what's deliberately
-*not* hardened (session expiry, login rate limiting) — flagged
-explicitly rather than silently absent.
+every page load. The same `require_login()` also enforces idle session
+expiry (30 min default) and `render_login_form()` enforces per-account
+login rate limiting (5 failures/15 min, backed by the audit log) before
+even checking the password — see `docs/design.md`'s "Auth hardening"
+section for how each works.
+
+`tests/test_streamlit_rbac.py` proves all of this with Streamlit's
+official `AppTest` framework: simulated logins as both roles, checking
+that Field Technician is denied on the Input/Config Editor/Audit Log
+pages and granted everywhere else, that Lead Engineer has full access,
+that running a scenario or editing config produces an audit log entry,
+that repeated failed logins get rate-limited (even a *subsequent
+correct* password is blocked once limited), and that a session expires
+after simulated idle time. See `docs/design.md`'s "Enterprise Layer"
+section for two real bugs this style of testing caught that no amount of
+HTTP-status smoke testing could have.
 
 ## 12. Loading scenarios from config files
 

@@ -160,18 +160,52 @@ proper spanning-tree-based continuity solver or a UI for the user to
 supply their own valid initial guess; out of scope for what this
 demonstrates today (see Extension points below).
 
-### Why bcrypt, and what's deliberately *not* hardened
+### Auth hardening: constant-time lookup, rate limiting, session expiry
 
 Passwords are hashed with bcrypt (`src/auth/service.py`) — salted
 automatically, adaptive cost factor, no plaintext ever stored or
-compared. What this demo does *not* implement: constant-time username
-lookup (a sufficiently motivated attacker could in principle distinguish
-"wrong password" from "no such user" by timing, since the database
-lookup short-circuits before the hash comparison when the username
-doesn't exist), session expiry/timeout, rate limiting on login attempts,
-or password complexity requirements. None of these are hard to add, but
-none were necessary to demonstrate the actual ask (role-gated access +
-traceability) — flagged here rather than silently absent.
+compared. Three gaps flagged in an earlier version of this document have
+since been closed:
+
+- **Constant-time username lookup**: `authenticate()` previously
+  returned immediately on a username-not-found lookup, which is
+  measurably faster than running a real bcrypt comparison — a timing
+  side-channel revealing which usernames are registered. It now runs a
+  bcrypt comparison against a fixed dummy hash (`_DUMMY_PASSWORD_HASH`,
+  computed once at import time, never used as a real credential) even
+  when the username doesn't exist, so response time no longer depends on
+  whether the account exists. Verified in
+  `tests/test_auth.py::test_authenticate_timing_nonexistent_vs_wrong_password_is_similar`
+  with a generous tolerance (sandboxed CI timing is noisy; this isn't a
+  precision timing-attack benchmark, just a regression guard against
+  reintroducing an obviously-fast early return).
+- **Login rate limiting**: backed by the audit log rather than a new
+  table — every failed login is already recorded as a `login_failed`
+  entry, so `count_recent_failed_logins()` / `is_rate_limited()` just
+  query recent entries for that username (default: 5 failures within 15
+  minutes, both overridable via `HYDRAULIC_LOGIN_MAX_ATTEMPTS` /
+  `HYDRAULIC_LOGIN_WINDOW_MINUTES`). A successful login resets the count.
+  Applies to nonexistent usernames too — otherwise the rate-limit
+  message itself becomes a second username-existence oracle. Checked by
+  `render_login_form()` *before* calling `authenticate()`, so a
+  rate-limited attempt is rejected without even touching the password.
+- **Idle session expiry**: `require_login()` tracks
+  `st.session_state["_last_activity_ts"]` and clears the session (with a
+  message, and an audit log entry) if more than
+  `HYDRAULIC_SESSION_TIMEOUT_SECONDS` (default 30 minutes) has passed
+  since the last page interaction. This is an idle timeout, not an
+  absolute session lifetime — any page load resets the clock.
+
+All three are exercised by `tests/test_streamlit_rbac.py` using real
+simulated login attempts (including a test that 5 failures block even a
+*subsequent correct* password, and a test that rewinds the recorded
+activity timestamp to simulate elapsed idle time) — not just unit tests
+of the underlying `src/auth/service.py` functions in isolation.
+
+Still not implemented, deliberately: password complexity requirements,
+IP-based (rather than per-account) rate limiting, multi-factor auth,
+SSO/OAuth. None of these were part of what this demonstrates; add them
+if your actual deployment needs them.
 
 ### How RBAC is actually enforced (and how this is tested)
 
@@ -259,19 +293,28 @@ section 8 mirrors this with the same underlying data.
   `swamee_jain.py` (or a new sibling module) and update
   `friction.darcy_friction_factor`'s dispatch.
 - Add new fitting types: extend `head_loss.K_FACTORS`.
-- The Network Map (`6_network_map.py`) now models an actual branching
-  network via `hydraulics.network`'s Hardy Cross solver and PostGIS —
-  partially fulfilling what was previously listed here as "extend Mura
-  beyond a single-pipe-per-scenario model." What's still specific to the
-  one demo topology: the page's *initial flow guess* hardcodes the demo
-  network's exact pipe names. A general version would need either a
-  proper spanning-tree-based continuity solver (derive a valid initial
-  guess from arbitrary topology + external demands automatically) or a
-  UI for the user to supply their own.
-- Auth hardening: session expiry/timeout, login rate limiting, constant-
-  time username lookup, password complexity rules — see "Why bcrypt, and
-  what's deliberately not hardened" above for what's intentionally absent
-  from this demo and why.
+- ~~The Network Map's initial flow guess hardcodes the demo network's
+  exact pipe names~~ — resolved:
+  `hydraulics.network.compute_initial_flows_spanning_tree` constructs a
+  continuity-satisfying initial guess for *any* connected topology via a
+  spanning-tree decomposition (tree edges solved by back-substitution
+  from the leaves, chord edges start at zero — the standard Hardy Cross
+  starting point). External supply/demand is now persisted per-node
+  (`GeoNode.external_flow_m3s`) rather than read from a page-local
+  constant. Verified by confirming two *different* valid initial guesses
+  (the old hand-crafted one and the new generic one) converge to the
+  identical physical solution
+  (`tests/test_network.py::test_spanning_tree_and_hand_crafted_guess_converge_to_same_solution`).
+  What's still out of scope: networks with multiple disconnected
+  components (raises a clear error rather than solving each separately),
+  and no UI yet for adding/editing nodes-and-pipes interactively (the
+  Network Map page can seed the demo topology or read whatever's already
+  in the database, but building a new arbitrary network still means
+  calling `geospatial.service.upsert_node/upsert_pipe/upsert_loop_member`
+  directly, not a form in the page).
+- ~~Auth hardening: session expiry, rate limiting, constant-time
+  lookup~~ — resolved, see "Auth hardening" above. Still open: password
+  complexity rules, IP-based rate limiting, MFA, SSO/OAuth.
 - The Config Editor writes directly to `configs/*.yaml` on disk, which
   is fine for `docker compose` (volume-mounted, durable) but doesn't
   survive a redeploy on ephemeral-filesystem platforms (Streamlit
