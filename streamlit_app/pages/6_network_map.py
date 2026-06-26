@@ -5,6 +5,12 @@ Plots the physical (lat/lon) layout of the pipe network stored in
 PostGIS, color-coded by hydraulic velocity against the SNI 03-6481-2000
 recommended range — the same Mura (unevenness) lens as the Lean
 Dashboard, applied spatially rather than as an abstract bar chart.
+
+Works for any stored topology, not just this project's one demo shape —
+the initial Hardy Cross flow guess is constructed automatically via
+``hydraulics.network.compute_initial_flows_spanning_tree`` from each
+node's persisted external supply/demand, rather than a page-hardcoded
+heuristic tied to specific pipe names.
 """
 
 import sys
@@ -22,7 +28,7 @@ from auth_helpers import require_login, render_user_badge
 from src.audit.service import log_action
 from src.geospatial.service import get_network_geometry, get_all_loops, seed_demo_network
 from src.geospatial.map_view import build_network_map, _pipe_velocity
-from src.hydraulics.network import PipeNetwork, NetworkPipe
+from src.hydraulics.network import PipeNetwork, NetworkPipe, compute_initial_flows_spanning_tree
 from src.utils.constants import WATER_DENSITY, WATER_VISCOSITY, SNI_VELOCITY_MIN, SNI_VELOCITY_MAX
 
 st.set_page_config(page_title="Network Map — Hydraulic Simulator", page_icon="🗺️", layout="wide")
@@ -74,34 +80,36 @@ if not loops:
     st.stop()
 
 # ── Flow scenario controls ───────────────────────────────────────────────────
+# External supply/demand is stored per-node (GeoNode.external_flow_m3s) —
+# editable here for a quick "what if" adjustment, with the persisted
+# values as defaults. compute_initial_flows_spanning_tree works on
+# whatever topology is actually loaded, not just this project's one demo
+# shape — see hydraulics.network for how the spanning-tree decomposition
+# generalizes Hardy Cross's initial-guess requirement.
 st.sidebar.header("Flow Scenario")
 st.sidebar.caption(
-    "Initial split is a simple heuristic for this demo's fixed topology "
-    "(60/40 across the two paths from the source), not a general network "
-    "solver — see docs/user_guide.md for arbitrary topologies."
-)
-total_flow_Ls = st.sidebar.number_input(
-    "Total supply (L/s)", min_value=0.1, max_value=100.0, value=10.0, step=0.5
+    "Per-node external supply (+) or demand (-), in L/s. Defaults come "
+    "from the stored network; adjust here for a quick what-if (changes "
+    "here are NOT saved — edit via the Config Editor / re-seed to persist)."
 )
 
-# This initial-flow heuristic is specific to the demo network's known
-# topology (node "1" = source, node "4" = demand, two paths between them
-# crossed by pipe "23") — NOT a generic continuity solver. A different
-# network shape would need its own initial-guess construction.
-pipe_names = {p.name for p in pipes}
-demo_topology = {"12", "13", "23", "24", "34"} <= pipe_names
-if demo_topology:
-    total_m3s = total_flow_Ls / 1000.0
-    initial_flows = {
-        "12": total_m3s * 0.6, "13": total_m3s * 0.4, "23": 0.0,
-        "24": total_m3s * 0.6, "34": total_m3s * 0.4,
-    }
-else:
-    st.error(
-        "This page's initial-flow heuristic only supports the demo "
-        "network's exact pipe names (12, 13, 23, 24, 34). Extend "
-        "`6_network_map.py` with your own continuity-satisfying initial "
-        "guess for a different topology."
+nonzero_default_nodes = [n for n in nodes if abs(n.external_flow_m3s) > 1e-12]
+editable_nodes = nonzero_default_nodes if nonzero_default_nodes else nodes
+
+external_flow_m3s: dict[str, float] = {n.name: n.external_flow_m3s for n in nodes}
+for n in editable_nodes:
+    label = f"{n.label or n.name} ({n.name})"
+    value_Ls = st.sidebar.number_input(
+        label, value=n.external_flow_m3s * 1000.0, step=0.5, format="%.3f",
+        key=f"ext_flow_{n.name}",
+    )
+    external_flow_m3s[n.name] = value_Ls / 1000.0
+
+total_imbalance_Ls = sum(external_flow_m3s.values()) * 1000.0
+if abs(total_imbalance_Ls) > 1e-3:
+    st.sidebar.error(
+        f"⚠️ Supply/demand must balance to ~0 — currently off by "
+        f"{total_imbalance_Ls:+.3f} L/s. Adjust values above."
     )
     st.stop()
 
@@ -109,6 +117,12 @@ network_pipes = [
     NetworkPipe(p.name, p.start_node, p.end_node, p.diameter_m, p.length_m, p.roughness_m)
     for p in pipes
 ]
+try:
+    initial_flows = compute_initial_flows_spanning_tree(network_pipes, external_flow_m3s)
+except ValueError as e:
+    st.error(f"⚠️ Could not construct a valid starting flow: {e}")
+    st.stop()
+
 network = PipeNetwork(network_pipes, loops, density=WATER_DENSITY, viscosity=WATER_VISCOSITY)
 solution = network.solve(initial_flows)
 

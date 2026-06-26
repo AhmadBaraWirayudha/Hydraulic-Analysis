@@ -10,12 +10,22 @@ from dataclasses import dataclass
 
 @dataclass
 class GeoNode:
-    """A network node with a real-world position."""
+    """A network node with a real-world position.
+
+    ``external_flow_m3s`` is the net external supply (+) or demand (-)
+    at this node [m³/s] — e.g. a source reservoir's inflow, or a demand
+    point's draw. Defaults to 0.0 (a pure junction, neither supplying nor
+    demanding). Feeds directly into
+    ``hydraulics.network.compute_initial_flows_spanning_tree`` to
+    automatically construct a valid Hardy Cross starting flow for
+    whatever topology is actually stored — see the Network Map page.
+    """
 
     name: str
     latitude: float
     longitude: float
     label: str | None = None
+    external_flow_m3s: float = 0.0
 
 
 @dataclass

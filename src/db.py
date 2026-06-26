@@ -85,6 +85,7 @@ CREATE TABLE IF NOT EXISTS network_nodes (
     id SERIAL PRIMARY KEY,
     name VARCHAR(50) UNIQUE NOT NULL,
     label VARCHAR(100),
+    external_flow_m3s DOUBLE PRECISION NOT NULL DEFAULT 0.0,
     geom GEOMETRY(POINT, 4326) NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_network_nodes_geom ON network_nodes USING GIST (geom);
@@ -111,13 +112,25 @@ CREATE TABLE IF NOT EXISTS network_loops (
 );
 """
 
+# Lightweight migrations: CREATE TABLE IF NOT EXISTS above only handles
+# brand-new tables — it's a no-op against an existing deployment's table
+# that predates a new column. ADD COLUMN IF NOT EXISTS (Postgres 9.6+)
+# covers that gap without requiring a destructive reset_schema() call on
+# a database that might already hold real data.
+MIGRATIONS_SQL = """
+ALTER TABLE network_nodes ADD COLUMN IF NOT EXISTS external_flow_m3s DOUBLE PRECISION NOT NULL DEFAULT 0.0;
+"""
+
 
 def init_schema() -> None:
     """Create all enterprise tables (and the PostGIS extension) if they
-    don't already exist. Idempotent — safe to call on every app startup."""
+    don't already exist, then apply any pending lightweight migrations
+    (new columns on existing tables). Idempotent — safe to call on every
+    app startup."""
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(SCHEMA_SQL)
+            cur.execute(MIGRATIONS_SQL)
 
 
 def reset_schema() -> None:

@@ -14,8 +14,14 @@ from ..db import get_connection
 from .models import GeoNode, GeoPipe
 
 
-def upsert_node(name: str, latitude: float, longitude: float, label: str | None = None) -> None:
-    """Insert or update a network node's position.
+def upsert_node(
+    name: str,
+    latitude: float,
+    longitude: float,
+    label: str | None = None,
+    external_flow_m3s: float = 0.0,
+) -> None:
+    """Insert or update a network node's position and external flow.
 
     Parameters
     ----------
@@ -24,6 +30,12 @@ def upsert_node(name: str, latitude: float, longitude: float, label: str | None 
     latitude  : float  in [-90, 90]
     longitude : float  in [-180, 180]
     label     : str | None  human-readable display name
+    external_flow_m3s : float
+                 net external supply (+) or demand (-) at this node
+                 [m³/s]; 0.0 (default) for a pure junction. Feeds
+                 ``hydraulics.network.compute_initial_flows_spanning_tree``
+                 so the Network Map page can solve any stored topology
+                 automatically, not just one hardcoded shape.
     """
     if not (-90 <= latitude <= 90):
         raise ValueError(f"Latitude must be in [-90, 90]. Got {latitude}.")
@@ -34,12 +46,14 @@ def upsert_node(name: str, latitude: float, longitude: float, label: str | None 
         with conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO network_nodes (name, label, geom)
-                VALUES (%s, %s, ST_SetSRID(ST_MakePoint(%s, %s), 4326))
+                INSERT INTO network_nodes (name, label, external_flow_m3s, geom)
+                VALUES (%s, %s, %s, ST_SetSRID(ST_MakePoint(%s, %s), 4326))
                 ON CONFLICT (name) DO UPDATE
-                    SET label = EXCLUDED.label, geom = EXCLUDED.geom
+                    SET label = EXCLUDED.label,
+                        external_flow_m3s = EXCLUDED.external_flow_m3s,
+                        geom = EXCLUDED.geom
                 """,
-                (name, label, longitude, latitude),
+                (name, label, external_flow_m3s, longitude, latitude),
             )
 
 
@@ -93,10 +107,14 @@ def get_all_nodes() -> list[GeoNode]:
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT name, label, ST_Y(geom), ST_X(geom) FROM network_nodes ORDER BY name"
+                "SELECT name, label, ST_Y(geom), ST_X(geom), external_flow_m3s "
+                "FROM network_nodes ORDER BY name"
             )
             rows = cur.fetchall()
-    return [GeoNode(name=r[0], label=r[1], latitude=r[2], longitude=r[3]) for r in rows]
+    return [
+        GeoNode(name=r[0], label=r[1], latitude=r[2], longitude=r[3], external_flow_m3s=r[4])
+        for r in rows
+    ]
 
 
 def get_all_pipes() -> list[GeoPipe]:
@@ -180,6 +198,13 @@ def get_all_loops() -> list:
     return [Loop(name=name, members=members) for name, members in loops.items()]
 
 
+def get_external_flows() -> dict[str, float]:
+    """Convenience: return {node_name: external_flow_m3s} for every
+    stored node, ready to pass directly to
+    ``hydraulics.network.compute_initial_flows_spanning_tree``."""
+    return {n.name: n.external_flow_m3s for n in get_all_nodes()}
+
+
 def get_network_geometry() -> tuple[list[GeoNode], list[GeoPipe]]:
     """Convenience: fetch both nodes and pipes in one call."""
     return get_all_nodes(), get_all_pipes()
@@ -201,17 +226,21 @@ def seed_demo_network() -> None:
     project's network-analysis examples (notebooks/network_and_transients.ipynb,
     tests/test_network.py) — but with real geographic coordinates (a
     plausible residential layout near Bandung, Indonesia, matching the
-    Citra Srie Pradita context the rest of this project references) so it
-    can actually be plotted on a map.
+    Citra Srie Pradita context the rest of this project references) and
+    persisted external flows, so it can be solved automatically by
+    ``hydraulics.network.compute_initial_flows_spanning_tree`` without any
+    page-level hardcoding of which nodes are sources/demands.
 
     Safe to call repeatedly — clears any existing network data first.
     """
     clear_network()
 
-    upsert_node("1", latitude=-6.9175, longitude=107.6191, label="Source reservoir")
+    upsert_node("1", latitude=-6.9175, longitude=107.6191, label="Source reservoir",
+                external_flow_m3s=0.010)   # 10 L/s supply
     upsert_node("2", latitude=-6.9180, longitude=107.6200, label="Junction A")
     upsert_node("3", latitude=-6.9185, longitude=107.6195, label="Junction B")
-    upsert_node("4", latitude=-6.9190, longitude=107.6205, label="Demand point")
+    upsert_node("4", latitude=-6.9190, longitude=107.6205, label="Demand point",
+                external_flow_m3s=-0.010)  # 10 L/s demand
 
     upsert_pipe("12", "1", "2", diameter_m=0.10, length_m=200.0, roughness_m=1.5e-6)
     upsert_pipe("13", "1", "3", diameter_m=0.075, length_m=250.0, roughness_m=1.5e-6)

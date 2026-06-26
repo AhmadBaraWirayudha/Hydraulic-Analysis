@@ -12,6 +12,7 @@ from src.auth.models import User, Role
 from src.auth.service import (
     hash_password, verify_password, create_user, get_user_by_username,
     authenticate, list_users, seed_demo_users,
+    count_recent_failed_logins, is_rate_limited, LOGIN_RATE_LIMIT_MAX_ATTEMPTS,
 )
 
 
@@ -125,3 +126,97 @@ def test_seeded_demo_users_can_authenticate(clean_schema):
     eng = authenticate("engineer", "engineer123")
     assert tech is not None and tech.role == Role.FIELD_TECHNICIAN
     assert eng is not None and eng.role == Role.LEAD_ENGINEER
+
+
+# ── Constant-time username lookup ──────────────────────────────────────────
+def test_authenticate_timing_nonexistent_vs_wrong_password_is_similar(clean_schema):
+    """The whole point of the dummy-hash comparison: response time for a
+    nonexistent username shouldn't be dramatically faster than for a
+    wrong password on a real account (which would leak which usernames
+    are registered). Uses a generous tolerance (not a precise timing-
+    attack benchmark) since CI/sandboxed environments have noisy timing."""
+    import time
+
+    create_user("real_user", "correct_password", Role.FIELD_TECHNICIAN)
+
+    t0 = time.perf_counter()
+    authenticate("nonexistent_user_xyz", "whatever")
+    t1 = time.perf_counter()
+    authenticate("real_user", "wrong_password")
+    t2 = time.perf_counter()
+
+    nonexistent_time = t1 - t0
+    wrong_password_time = t2 - t1
+    # Generous bound: nonexistent-username path should take at least 50%
+    # as long as the real comparison (a naive unhardened implementation
+    # would typically be 100-1000x faster, since it skips bcrypt entirely).
+    assert nonexistent_time > wrong_password_time * 0.5
+
+
+def test_authenticate_still_correctly_rejects_nonexistent_user(clean_schema):
+    """Hardening shouldn't change the actual (non-timing) behavior."""
+    assert authenticate("nonexistent_user_xyz", "whatever") is None
+
+
+# ── Login rate limiting ─────────────────────────────────────────────────────
+def test_count_recent_failed_logins_zero_initially(clean_schema):
+    assert count_recent_failed_logins("alice") == 0
+
+
+def test_count_recent_failed_logins_counts_login_failed_entries(clean_schema):
+    from src.audit.service import log_action
+
+    for _ in range(3):
+        log_action("alice", "login_failed", {})
+    assert count_recent_failed_logins("alice") == 3
+
+
+def test_is_rate_limited_false_under_threshold(clean_schema):
+    from src.audit.service import log_action
+
+    for _ in range(LOGIN_RATE_LIMIT_MAX_ATTEMPTS - 1):
+        log_action("alice", "login_failed", {})
+    assert is_rate_limited("alice") is False
+
+
+def test_is_rate_limited_true_at_threshold(clean_schema):
+    from src.audit.service import log_action
+
+    for _ in range(LOGIN_RATE_LIMIT_MAX_ATTEMPTS):
+        log_action("alice", "login_failed", {})
+    assert is_rate_limited("alice") is True
+
+
+def test_is_rate_limited_resets_after_successful_login(clean_schema):
+    from src.audit.service import log_action
+
+    for _ in range(LOGIN_RATE_LIMIT_MAX_ATTEMPTS):
+        log_action("alice", "login_failed", {})
+    assert is_rate_limited("alice") is True
+
+    log_action("alice", "login", {})
+    assert is_rate_limited("alice") is False
+
+
+def test_is_rate_limited_applies_to_nonexistent_usernames_too(clean_schema):
+    """Rate limiting must not itself become a username-existence oracle —
+    a nonexistent username hammered repeatedly should also get limited."""
+    from src.audit.service import log_action
+
+    for _ in range(LOGIN_RATE_LIMIT_MAX_ATTEMPTS):
+        log_action("totally_made_up_user", "login_failed", {})
+    assert is_rate_limited("totally_made_up_user") is True
+
+
+def test_is_rate_limited_false_for_blank_username(clean_schema):
+    assert is_rate_limited("") is False
+
+
+def test_is_rate_limited_per_username_independent(clean_schema):
+    """Failed attempts on one account shouldn't rate-limit a different one."""
+    from src.audit.service import log_action
+
+    for _ in range(LOGIN_RATE_LIMIT_MAX_ATTEMPTS):
+        log_action("alice", "login_failed", {})
+    assert is_rate_limited("alice") is True
+    assert is_rate_limited("bob") is False

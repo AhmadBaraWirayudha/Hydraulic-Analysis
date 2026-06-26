@@ -171,3 +171,156 @@ def test_lead_engineer_running_a_scenario_is_audit_logged(seeded_db):
     assert len(run_entries) == 1
     assert run_entries[0].username == "engineer"
     assert "diameter_mm" in run_entries[0].details
+
+
+# ── Auth hardening: rate limiting ───────────────────────────────────────────
+def test_repeated_failed_logins_get_rate_limited(seeded_db):
+    from src.auth.service import LOGIN_RATE_LIMIT_MAX_ATTEMPTS
+
+    at = AppTest.from_file("streamlit_app/app.py")
+    at.default_timeout = 15
+    at.run()
+
+    for _ in range(LOGIN_RATE_LIMIT_MAX_ATTEMPTS):
+        at.text_input[0].set_value("technician")
+        at.text_input[1].set_value("wrong_password")
+        at.button[0].click().run()
+
+    # One more attempt, this time with the CORRECT password — should
+    # still be blocked, since the account is now rate-limited regardless
+    # of whether the credentials are right.
+    at.text_input[0].set_value("technician")
+    at.text_input[1].set_value("technician123")
+    at.button[0].click().run()
+
+    assert at.exception.len == 0
+    assert any("Too many failed login attempts" in e.value for e in at.error)
+    assert "user" not in at.session_state
+
+
+def test_rate_limiting_is_audit_logged(seeded_db):
+    from src.auth.service import LOGIN_RATE_LIMIT_MAX_ATTEMPTS
+    from src.audit.service import get_audit_log
+
+    at = AppTest.from_file("streamlit_app/app.py")
+    at.default_timeout = 15
+    at.run()
+
+    for _ in range(LOGIN_RATE_LIMIT_MAX_ATTEMPTS + 1):
+        at.text_input[0].set_value("technician")
+        at.text_input[1].set_value("wrong_password")
+        at.button[0].click().run()
+
+    entries = get_audit_log()
+    assert any(e.action == "login_rate_limited" for e in entries)
+
+
+def test_successful_login_after_rate_limit_window_resets(seeded_db):
+    """A correct login should always succeed when attempted BEFORE the
+    rate limit kicks in (sanity check that the feature doesn't lock out
+    legitimate logins under normal use)."""
+    from src.auth.service import LOGIN_RATE_LIMIT_MAX_ATTEMPTS
+
+    at = AppTest.from_file("streamlit_app/app.py")
+    at.default_timeout = 15
+    at.run()
+
+    # Fewer failures than the threshold should NOT block a subsequent
+    # correct login.
+    for _ in range(LOGIN_RATE_LIMIT_MAX_ATTEMPTS - 1):
+        at.text_input[0].set_value("technician")
+        at.text_input[1].set_value("wrong_password")
+        at.button[0].click().run()
+
+    at.text_input[0].set_value("technician")
+    at.text_input[1].set_value("technician123")
+    at.button[0].click().run()
+
+    assert "user" in at.session_state
+    assert at.session_state["user"].username == "technician"
+
+
+# ── Auth hardening: session expiry ──────────────────────────────────────────
+def test_session_expires_after_idle_timeout(seeded_db):
+    at = AppTest.from_file("streamlit_app/app.py")
+    at.default_timeout = 15
+    at = _login(at, "technician", "technician123")
+    assert "user" in at.session_state
+
+    # Simulate the idle timeout having elapsed by rewinding the recorded
+    # last-activity timestamp, then trigger another page load.
+    at.session_state["_last_activity_ts"] -= 31 * 60
+    at.run()
+
+    assert "user" not in at.session_state
+    assert any("session expired" in w.value.lower() for w in at.warning)
+    assert any("Sign in" in t.value for t in at.title)
+
+
+def test_session_expiry_is_audit_logged(seeded_db):
+    from src.audit.service import get_audit_log
+
+    at = AppTest.from_file("streamlit_app/app.py")
+    at.default_timeout = 15
+    at = _login(at, "technician", "technician123")
+    at.session_state["_last_activity_ts"] -= 31 * 60
+    at.run()
+
+    entries = get_audit_log()
+    assert any(e.action == "session_expired" for e in entries)
+
+
+def test_session_does_not_expire_within_timeout_window(seeded_db):
+    """Activity within the timeout window should keep the session alive
+    — a regression guard against an overly aggressive timeout."""
+    at = AppTest.from_file("streamlit_app/app.py")
+    at.default_timeout = 15
+    at = _login(at, "technician", "technician123")
+
+    # Simulate only 5 minutes of idle time (well under the 30 min default).
+    at.session_state["_last_activity_ts"] -= 5 * 60
+    at.run()
+
+    assert "user" in at.session_state
+    assert at.session_state["user"].username == "technician"
+
+
+# ── Network Map: generic spanning-tree solver, end-to-end through the page ──
+def test_network_map_seeds_and_solves_via_generic_solver(seeded_db):
+    """The Network Map page should seed the demo network, solve it using
+    the generic spanning-tree initial-flow construction (no pipe names
+    hardcoded in the page itself), and render without error."""
+    at = AppTest.from_file(f"{PROJECT_ROOT_PAGES}/6_network_map.py")
+    at.default_timeout = 15
+    at = _login(at, "engineer", "engineer123")
+    assert at.exception.len == 0
+
+    seed_button = next(b for b in at.button if "Seed demo network" in b.label)
+    seed_button.click().run()
+    assert at.exception.len == 0
+    assert not any("Could not construct" in e.value for e in at.error)
+
+    # Per-node external-flow inputs should reflect the persisted demo
+    # values (10 L/s source, -10 L/s demand) — confirming the page reads
+    # real data rather than a page-local constant.
+    flow_inputs = {ni.label: ni.value for ni in at.sidebar.number_input}
+    assert any(v == pytest.approx(10.0) for v in flow_inputs.values())
+    assert any(v == pytest.approx(-10.0) for v in flow_inputs.values())
+    assert len(at.dataframe) == 1
+
+
+def test_network_map_flags_imbalanced_external_flow(seeded_db):
+    """Editing a node's external flow to break mass balance should be
+    caught with a clear error, not silently fed into the solver."""
+    at = AppTest.from_file(f"{PROJECT_ROOT_PAGES}/6_network_map.py")
+    at.default_timeout = 15
+    at = _login(at, "engineer", "engineer123")
+    seed_button = next(b for b in at.button if "Seed demo network" in b.label)
+    seed_button.click().run()
+
+    # Break balance: bump the source's supply without changing the demand.
+    source_input = next(ni for ni in at.sidebar.number_input if ni.value == pytest.approx(10.0))
+    source_input.set_value(15.0).run()
+
+    assert at.exception.len == 0
+    assert any("must balance to ~0" in e.value for e in at.error)

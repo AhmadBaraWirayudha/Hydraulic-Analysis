@@ -16,7 +16,7 @@ import pytest
 
 from src.hydraulics.network import (
     hardy_cross_solve, Loop, LoopMember, NetworkSolution,
-    PipeNetwork, NetworkPipe,
+    PipeNetwork, NetworkPipe, compute_initial_flows_spanning_tree,
 )
 from src.utils.constants import WATER_DENSITY, WATER_VISCOSITY, PVC_ROUGHNESS
 
@@ -196,3 +196,155 @@ def test_pipe_network_solve_rejects_incomplete_initial_flows(simple_real_network
     incomplete = {"12": 0.005, "13": 0.005, "23": 0.0, "24": 0.005}  # missing '34'
     with pytest.raises(ValueError, match="missing pipes"):
         simple_real_network.solve(incomplete)
+
+
+# ── compute_initial_flows_spanning_tree ─────────────────────────────────────
+def test_spanning_tree_simple_two_node():
+    pipes = [NetworkPipe("AB", "A", "B", 0.1, 100, 1.5e-6)]
+    flows = compute_initial_flows_spanning_tree(pipes, {"A": 10.0, "B": -10.0})
+    assert flows == {"AB": pytest.approx(10.0)}
+
+
+def test_spanning_tree_reversed_pipe_direction():
+    """Same physical flow, but the pipe is defined in the opposite
+    direction — the result's sign should flip accordingly."""
+    pipes = [NetworkPipe("BA", "B", "A", 0.1, 100, 1.5e-6)]
+    flows = compute_initial_flows_spanning_tree(pipes, {"A": 10.0, "B": -10.0})
+    assert flows == {"BA": pytest.approx(-10.0)}
+
+
+def test_spanning_tree_pure_tree_star_topology():
+    """No loops at all (a pure tree) — fully determined by continuity,
+    each leg should carry exactly its leaf's demand."""
+    pipes = [
+        NetworkPipe("center_a", "center", "a", 0.1, 50, 1.5e-6),
+        NetworkPipe("center_b", "center", "b", 0.1, 50, 1.5e-6),
+        NetworkPipe("center_c", "center", "c", 0.1, 50, 1.5e-6),
+    ]
+    flows = compute_initial_flows_spanning_tree(
+        pipes, {"center": 0.030, "a": -0.010, "b": -0.010, "c": -0.010}
+    )
+    assert flows["center_a"] == pytest.approx(0.010)
+    assert flows["center_b"] == pytest.approx(0.010)
+    assert flows["center_c"] == pytest.approx(0.010)
+
+
+def test_spanning_tree_parallel_pipes_one_becomes_chord():
+    """Two pipes directly connecting the same pair of nodes form one
+    independent loop — exactly one of them must become a zero-flow chord."""
+    pipes = [
+        NetworkPipe("AB_1", "A", "B", 0.1, 100, 1.5e-6),
+        NetworkPipe("AB_2", "A", "B", 0.08, 100, 1.5e-6),
+    ]
+    flows = compute_initial_flows_spanning_tree(pipes, {"A": 10.0, "B": -10.0})
+    nonzero = [v for v in flows.values() if abs(v) > 1e-9]
+    zero = [v for v in flows.values() if abs(v) <= 1e-9]
+    assert len(nonzero) == 1
+    assert len(zero) == 1
+    assert nonzero[0] == pytest.approx(10.0)
+
+
+def test_spanning_tree_satisfies_continuity_exactly_on_demo_network():
+    pipes = [
+        NetworkPipe("12", "1", "2", 0.10, 200.0, 1.5e-6),
+        NetworkPipe("13", "1", "3", 0.075, 250.0, 1.5e-6),
+        NetworkPipe("23", "2", "3", 0.05, 150.0, 1.5e-6),
+        NetworkPipe("24", "2", "4", 0.075, 200.0, 1.5e-6),
+        NetworkPipe("34", "3", "4", 0.10, 200.0, 1.5e-6),
+    ]
+    external = {"1": 0.010, "4": -0.010}
+    flows = compute_initial_flows_spanning_tree(pipes, external)
+
+    network = PipeNetwork(pipes, loops=[], density=WATER_DENSITY, viscosity=WATER_VISCOSITY)
+    residuals = network.check_node_continuity(flows, external)
+    for node, residual in residuals.items():
+        assert abs(residual) < 1e-9, f"Node {node} continuity violated: {residual}"
+
+
+def test_spanning_tree_and_hand_crafted_guess_converge_to_same_solution():
+    """The real correctness proof: two different *valid* initial guesses
+    (one hand-crafted, one from the generic spanning-tree solver) must
+    converge to the identical physical Hardy Cross solution, since
+    convergence is independent of the (continuity-satisfying) starting
+    point."""
+    pipes = [
+        NetworkPipe("12", "1", "2", 0.10, 200.0, 1.5e-6),
+        NetworkPipe("13", "1", "3", 0.075, 250.0, 1.5e-6),
+        NetworkPipe("23", "2", "3", 0.05, 150.0, 1.5e-6),
+        NetworkPipe("24", "2", "4", 0.075, 200.0, 1.5e-6),
+        NetworkPipe("34", "3", "4", 0.10, 200.0, 1.5e-6),
+    ]
+    loop123 = Loop("123", [LoopMember("12", 1), LoopMember("23", 1), LoopMember("13", -1)])
+    loop234 = Loop("234", [LoopMember("23", -1), LoopMember("24", 1), LoopMember("34", -1)])
+    network = PipeNetwork(pipes, [loop123, loop234], density=WATER_DENSITY, viscosity=WATER_VISCOSITY)
+
+    hand_crafted_guess = {"12": 0.006, "13": 0.004, "23": 0.0, "24": 0.006, "34": 0.004}
+    spanning_tree_guess = compute_initial_flows_spanning_tree(pipes, {"1": 0.010, "4": -0.010})
+
+    solution_a = network.solve(hand_crafted_guess)
+    solution_b = network.solve(spanning_tree_guess)
+
+    assert solution_a.converged and solution_b.converged
+    for name in ["12", "13", "23", "24", "34"]:
+        assert solution_a.flows[name] == pytest.approx(solution_b.flows[name], abs=1e-6)
+
+
+def test_pipe_network_compute_initial_flows_convenience_method():
+    """PipeNetwork.compute_initial_flows should match the standalone
+    function using the network's own pipes."""
+    pipes = [NetworkPipe("AB", "A", "B", 0.1, 100, 1.5e-6)]
+    network = PipeNetwork(pipes, loops=[], density=WATER_DENSITY, viscosity=WATER_VISCOSITY)
+    flows = network.compute_initial_flows({"A": 5.0, "B": -5.0})
+    assert flows == {"AB": pytest.approx(5.0)}
+
+
+def test_spanning_tree_rejects_empty_pipe_list():
+    with pytest.raises(ValueError, match="at least one pipe"):
+        compute_initial_flows_spanning_tree([], {})
+
+
+def test_spanning_tree_rejects_disconnected_network():
+    pipes = [
+        NetworkPipe("AB", "A", "B", 0.1, 100, 1.5e-6),
+        NetworkPipe("CD", "C", "D", 0.1, 100, 1.5e-6),
+    ]
+    with pytest.raises(ValueError, match="not connected"):
+        compute_initial_flows_spanning_tree(pipes, {"A": 5.0, "B": -5.0, "C": 3.0, "D": -3.0})
+
+
+def test_spanning_tree_rejects_imbalanced_external_flow():
+    pipes = [NetworkPipe("AB", "A", "B", 0.1, 100, 1.5e-6)]
+    with pytest.raises(ValueError, match="must balance to ~0"):
+        compute_initial_flows_spanning_tree(pipes, {"A": 10.0, "B": -5.0})
+
+
+def test_spanning_tree_rejects_unknown_node_in_external_flow():
+    pipes = [NetworkPipe("AB", "A", "B", 0.1, 100, 1.5e-6)]
+    with pytest.raises(ValueError, match="not used by any pipe"):
+        compute_initial_flows_spanning_tree(pipes, {"A": 10.0, "GHOST": -10.0})
+
+
+def test_spanning_tree_defaults_unlisted_nodes_to_zero_external_flow():
+    """A node not present in external_flow should be treated as a pure
+    junction (0 external flow), not raise an error."""
+    pipes = [
+        NetworkPipe("AB", "A", "B", 0.1, 100, 1.5e-6),
+        NetworkPipe("BC", "B", "C", 0.1, 100, 1.5e-6),
+    ]
+    # 'B' is a pure junction, not listed in external_flow at all.
+    flows = compute_initial_flows_spanning_tree(pipes, {"A": 5.0, "C": -5.0})
+    assert flows["AB"] == pytest.approx(5.0)
+    assert flows["BC"] == pytest.approx(5.0)
+
+
+def test_spanning_tree_works_with_geospatial_geopipe_objects():
+    """The function accepts any pipe-like object with .name/.start_node/
+    .end_node — not just NetworkPipe — including geospatial.models.GeoPipe."""
+    from src.geospatial.models import GeoPipe
+
+    pipes = [
+        GeoPipe("AB", "A", "B", diameter_m=0.1, length_m=100, roughness_m=1.5e-6,
+                start_coords=(0.0, 0.0), end_coords=(1.0, 1.0)),
+    ]
+    flows = compute_initial_flows_spanning_tree(pipes, {"A": 5.0, "B": -5.0})
+    assert flows == {"AB": pytest.approx(5.0)}

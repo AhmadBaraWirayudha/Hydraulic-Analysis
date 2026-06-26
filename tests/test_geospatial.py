@@ -30,6 +30,29 @@ def test_upsert_node_roundtrips_coordinates_without_axis_swap(clean_network):
     assert nodes[0].latitude == pytest.approx(-6.9175)
     assert nodes[0].longitude == pytest.approx(107.6191)
     assert nodes[0].label == "Test node"
+    assert nodes[0].external_flow_m3s == pytest.approx(0.0)  # default
+
+
+def test_upsert_node_persists_external_flow(clean_network):
+    upsert_node("A", latitude=0.0, longitude=0.0, external_flow_m3s=0.015)
+    nodes = get_all_nodes()
+    assert nodes[0].external_flow_m3s == pytest.approx(0.015)
+
+
+def test_upsert_node_external_flow_update_persists(clean_network):
+    upsert_node("A", latitude=0.0, longitude=0.0, external_flow_m3s=0.010)
+    upsert_node("A", latitude=0.0, longitude=0.0, external_flow_m3s=-0.005)  # update
+    nodes = get_all_nodes()
+    assert nodes[0].external_flow_m3s == pytest.approx(-0.005)
+
+
+def test_get_external_flows_returns_dict_for_all_nodes(clean_network):
+    upsert_node("A", latitude=0.0, longitude=0.0, external_flow_m3s=0.010)
+    upsert_node("B", latitude=1.0, longitude=1.0, external_flow_m3s=-0.010)
+    from src.geospatial.service import get_external_flows
+
+    flows = get_external_flows()
+    assert flows == {"A": pytest.approx(0.010), "B": pytest.approx(-0.010)}
 
 
 def test_upsert_node_rejects_invalid_latitude(clean_network):
@@ -146,6 +169,43 @@ def test_seed_demo_network_creates_full_topology(clean_network):
     assert len(nodes) == 4
     assert len(pipes) == 5
     assert len(loops) == 2
+
+
+def test_seed_demo_network_persists_external_flows_that_balance(clean_network):
+    from src.geospatial.service import get_external_flows
+
+    seed_demo_network()
+    flows = get_external_flows()
+    assert flows["1"] == pytest.approx(0.010)
+    assert flows["4"] == pytest.approx(-0.010)
+    assert flows["2"] == pytest.approx(0.0)
+    assert flows["3"] == pytest.approx(0.0)
+    assert sum(flows.values()) == pytest.approx(0.0)  # mass must balance
+
+
+def test_seed_demo_network_solvable_via_generic_spanning_tree_solver(clean_network):
+    """End-to-end with NO hardcoded pipe names anywhere: external flows
+    come from the database, the initial guess comes from the generic
+    spanning-tree solver, and the result still converges — this is
+    exactly what the Network Map page now does."""
+    from src.hydraulics.network import compute_initial_flows_spanning_tree, PipeNetwork, NetworkPipe
+    from src.geospatial.service import get_external_flows
+    from src.utils.constants import WATER_DENSITY, WATER_VISCOSITY
+
+    seed_demo_network()
+    nodes, pipes = get_network_geometry()
+    loops = get_all_loops()
+    external_flows = get_external_flows()
+
+    network_pipes = [
+        NetworkPipe(p.name, p.start_node, p.end_node, p.diameter_m, p.length_m, p.roughness_m)
+        for p in pipes
+    ]
+    initial_flows = compute_initial_flows_spanning_tree(network_pipes, external_flows)
+    network = PipeNetwork(network_pipes, loops, density=WATER_DENSITY, viscosity=WATER_VISCOSITY)
+    solution = network.solve(initial_flows)
+
+    assert solution.converged
 
 
 def test_seed_demo_network_is_solvable(clean_network):

@@ -1,7 +1,8 @@
 # Hydraulic Distribution Analysis Toolkit
 
 A modular, config-driven Python package for analyzing water distribution
-pipelines using the **Darcy–Weisbach** and **Swamee–Jain (1976)** equations originally developed to evaluate pipe-diameter choices for the **Citra
+pipelines using the **Darcy–Weisbach** and **Swamee–Jain (1976)** equations
+— originally developed to evaluate pipe-diameter choices for the **Citra
 Srie Pradita** housing estate, and rebuilt here as a reusable engineering
 module rather than a one-off script. Now with the governance layer a
 multi-engineer team actually needs: **role-based access control**, **audit
@@ -14,13 +15,20 @@ logging**, and a **PostGIS-backed geospatial map** of the physical network.
   configuration). Enforced on every page, not just hidden in the UI; see
   `tests/test_streamlit_rbac.py` for the automated proof (using Streamlit's
   official `AppTest` framework — simulated logins, not just code review).
+  Hardened with constant-time login lookups (no username-existence timing
+  leak), per-account rate limiting (5 failures/15 min, backed by the audit
+  log), and idle session expiry (30 min default) — all three covered by
+  the same `AppTest`-based regression suite.
 - **Audit logging**: every scenario run and configuration edit is recorded
   to PostgreSQL — who, when, and (for config edits) the exact field-level
   diff — viewable on the Audit Log page.
 - **Geospatial network view**: the pipe network's real physical layout,
   stored in PostGIS and rendered on an interactive Folium map, color-coded
   by velocity against the SNI 03-6481-2000 range — the Lean Dashboard's
-  Mura (unevenness) lens, applied spatially.
+  Mura (unevenness) lens, applied spatially. The Hardy Cross initial-flow
+  guess is constructed automatically for *any* connected topology via a
+  spanning-tree decomposition (`hydraulics.network.compute_initial_flows_spanning_tree`),
+  not hardcoded to one demo network's pipe names.
 - **Hydraulic calculations**: friction factor (laminar/turbulent dispatch),
   Reynolds number, major (Darcy-Weisbach) and minor (K-factor) head losses,
   pump shaft power, and **exergy destruction** (Gouy-Stodola theorem) for
@@ -306,7 +314,13 @@ loop123 = Loop("123", [LoopMember("12", +1), LoopMember("23", +1), LoopMember("1
 loop234 = Loop("234", [LoopMember("23", -1), LoopMember("24", +1), LoopMember("34", -1)])
 network = PipeNetwork(pipes, [loop123, loop234], density=WATER_DENSITY, viscosity=WATER_VISCOSITY)
 
+# Hand-crafted initial guess (any continuity-satisfying assignment works):
 initial_flows = {"12": 0.030, "13": 0.020, "23": 0.0, "24": 0.030, "34": 0.020}
+
+# Or build one automatically for any connected topology, from each node's
+# net external supply (+) / demand (-) — no hand-derivation needed:
+# initial_flows = network.compute_initial_flows({"1": 0.050, "4": -0.050})
+
 result = network.solve(initial_flows)   # always check_node_continuity first!
 print(result.flows, result.converged)
 ```
@@ -368,25 +382,30 @@ for entry in get_audit_log(limit=5):
 RBAC is enforced on every Streamlit page via `streamlit_app/auth_helpers.py`'s
 `require_login()`/`require_role()` — see `tests/test_streamlit_rbac.py` for
 the automated proof (simulated logins via Streamlit's official `AppTest`
-framework, not just a code-review claim).
+framework, not just a code-review claim). The same module enforces login
+rate limiting (`src.auth.service.is_rate_limited`) and idle session
+expiry (`HYDRAULIC_SESSION_TIMEOUT_SECONDS`, default 1800s) automatically
+— no extra setup needed beyond what `require_login()` already does.
 
 ### Geospatial network view
 
 ```python
-from src.geospatial.service import seed_demo_network, get_network_geometry
+from src.geospatial.service import seed_demo_network, get_network_geometry, get_external_flows, get_all_loops
 from src.geospatial.map_view import build_network_map
-from src.hydraulics.network import PipeNetwork, NetworkPipe
+from src.hydraulics.network import PipeNetwork, NetworkPipe, compute_initial_flows_spanning_tree
 from src.utils.constants import WATER_DENSITY, WATER_VISCOSITY
 
 seed_demo_network()   # the same 4-node, 2-loop demo network, with real coordinates
 nodes, pipes = get_network_geometry()
 
-# Solve hydraulically (reusing the existing Hardy Cross module) and color
-# the map by velocity:
-from src.geospatial.service import get_all_loops
+# Build the initial Hardy Cross flow guess automatically from each node's
+# persisted external supply/demand — works for any connected topology,
+# not just this one demo shape (see hydraulics.network for how).
 network_pipes = [NetworkPipe(p.name, p.start_node, p.end_node, p.diameter_m, p.length_m, p.roughness_m) for p in pipes]
+initial_flows = compute_initial_flows_spanning_tree(network_pipes, get_external_flows())
+
 network = PipeNetwork(network_pipes, get_all_loops(), density=WATER_DENSITY, viscosity=WATER_VISCOSITY)
-solution = network.solve({"12": 0.006, "13": 0.004, "23": 0.0, "24": 0.006, "34": 0.004})
+solution = network.solve(initial_flows)
 
 fmap = build_network_map(nodes, pipes, flows=solution.flows)
 fmap.save("network_map.html")

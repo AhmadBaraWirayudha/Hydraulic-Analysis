@@ -283,3 +283,142 @@ class PipeNetwork:
             max_iterations=max_iterations,
             tolerance=tolerance_m3s,
         )
+
+    def compute_initial_flows(self, external_flow: dict[str, float]) -> dict[str, float]:
+        """Convenience wrapper around ``compute_initial_flows_spanning_tree``
+        using this network's own pipes — see that function for details."""
+        return compute_initial_flows_spanning_tree(list(self.pipes.values()), external_flow)
+
+
+# ── Generic initial-flow construction (spanning tree) ─────────────────────
+def compute_initial_flows_spanning_tree(
+    pipes: list,
+    external_flow: dict[str, float],
+) -> dict[str, float]:
+    """Construct a continuity-satisfying initial flow assignment for an
+    *arbitrary* network topology, via a spanning-tree decomposition —
+    the standard way to bootstrap Hardy Cross without hand-deriving a
+    valid starting guess for every new network shape.
+
+    How it works
+    ------------
+    1. Build a spanning tree of the network graph (pipes = edges, nodes =
+       vertices) via breadth-first search from an arbitrary root.
+    2. Pipes *not* in the tree ("chords") get an initial flow of exactly
+       0 — the standard Hardy Cross starting point. The number of chords
+       equals the number of independent loops in the network
+       (edges - nodes + 1, for a connected graph), which is exactly
+       what those loops' Hardy Cross corrections will adjust away from
+       zero during iteration.
+    3. Tree-edge flows are solved by back-substitution from the leaves
+       inward: every node's subtree (everything reachable through it,
+       away from the root) must have its net external demand satisfied
+       *entirely* through the single tree edge connecting it to its
+       parent, since every chord is at zero flow. This gives an exact,
+       closed-form (no iteration needed) flow for every tree edge.
+
+    This produces a flow assignment that satisfies node continuity
+    *exactly* (to floating-point precision) before any Hardy Cross
+    correction is applied — pass the result straight to
+    ``hardy_cross_solve`` / ``PipeNetwork.solve``.
+
+    Parameters
+    ----------
+    pipes         : list of pipe-like objects with ``.name``,
+                     ``.start_node``, ``.end_node`` attributes (e.g.
+                     ``NetworkPipe``, or ``geospatial.models.GeoPipe``)
+    external_flow : dict[str, float]
+                     net external supply (+) or demand (-) at each node
+                     [m³/s]; nodes not listed default to 0 (pure
+                     junctions). Must sum to ~0 across the whole network
+                     — mass must balance overall, or no steady-state flow
+                     exists.
+
+    Returns
+    -------
+    dict[str, float]
+        Initial signed flow per pipe (positive = ``start_node ->
+        end_node``), satisfying node continuity exactly.
+
+    Raises
+    ------
+    ValueError
+        If there are no pipes, ``external_flow`` references a node that
+        doesn't appear in any pipe, the network is disconnected, or the
+        total external flow doesn't balance to ~0.
+    """
+    if not pipes:
+        raise ValueError("Need at least one pipe to construct initial flows.")
+
+    all_nodes: set[str] = set()
+    # adjacency[node] = list of (neighbor, pipe_name, direction), where
+    # direction = +1 if the pipe's own start->end direction matches
+    # node->neighbor, -1 if it's reversed.
+    adjacency: dict[str, list[tuple[str, str, int]]] = {}
+    for p in pipes:
+        all_nodes.add(p.start_node)
+        all_nodes.add(p.end_node)
+        adjacency.setdefault(p.start_node, []).append((p.end_node, p.name, 1))
+        adjacency.setdefault(p.end_node, []).append((p.start_node, p.name, -1))
+
+    unknown_nodes = set(external_flow) - all_nodes
+    if unknown_nodes:
+        raise ValueError(
+            f"external_flow references node(s) not used by any pipe: {sorted(unknown_nodes)}"
+        )
+
+    total_external = sum(external_flow.get(n, 0.0) for n in all_nodes)
+    if abs(total_external) > 1e-6:
+        raise ValueError(
+            f"Total external flow must balance to ~0 for a steady-state solution "
+            f"(supplies must equal demands). Got a net imbalance of "
+            f"{total_external:.6g} m³/s."
+        )
+
+    root = sorted(all_nodes)[0]
+    visited = {root}
+    order = [root]
+    # parent_edge[node] = (parent_node, pipe_name, direction), where
+    # direction = +1 means the pipe's start->end direction is parent->node.
+    parent_edge: dict[str, tuple[str, str, int]] = {}
+
+    queue = [root]
+    while queue:
+        current = queue.pop(0)
+        for neighbor, pipe_name, direction in adjacency.get(current, []):
+            if neighbor not in visited:
+                visited.add(neighbor)
+                parent_edge[neighbor] = (current, pipe_name, direction)
+                order.append(neighbor)
+                queue.append(neighbor)
+
+    if len(visited) != len(all_nodes):
+        unreachable = all_nodes - visited
+        raise ValueError(
+            f"Network is not connected — node(s) {sorted(unreachable)} are not "
+            f"reachable from node '{root}'. A spanning tree (and therefore a "
+            f"valid initial flow) requires the whole network to be one connected "
+            f"component."
+        )
+
+    # Sum each node's own external flow plus everything in its subtree,
+    # processed in reverse BFS order so every child is folded into its
+    # parent before the parent itself is processed.
+    subtree_balance = {n: external_flow.get(n, 0.0) for n in all_nodes}
+    for node in reversed(order):
+        if node == root:
+            continue
+        parent, _pipe_name, _direction = parent_edge[node]
+        subtree_balance[parent] += subtree_balance[node]
+
+    flows = {p.name: 0.0 for p in pipes}  # chords default to 0
+    for node in order:
+        if node == root:
+            continue
+        parent, pipe_name, direction = parent_edge[node]
+        # Everything this node's subtree needs (or has in excess) must
+        # flow in (or out) through this one tree edge.
+        flow_into_node = -subtree_balance[node]
+        flows[pipe_name] = flow_into_node if direction == 1 else -flow_into_node
+
+    return flows
