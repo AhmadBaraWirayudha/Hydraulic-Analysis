@@ -84,6 +84,25 @@ logging**, and a **PostGIS-backed geospatial map** of the physical network.
   rated pressure. Wave-speed formula validated against its rigid-pipe
   limit (reduces exactly to the unconfined speed of sound in water) and
   literature-typical wave speeds for steel/PVC pipe.
+- **Pressure-design wall thickness (ASME B31.3)**: `src/hydraulics/pipe_design.py`
+  — Equation (3a) for straight pipe under internal pressure, verified
+  against a published worked example (1480 psig, NPS 6 / 6.625 in OD,
+  S = 20,000 psi → t = 0.238 in, exact match). Carries the calculation
+  through to something you can actually order: corrosion/mechanical
+  allowance (t_m = t + c), grossed up for mill manufacturing
+  under-tolerance, with an explicit thin-wall (t < D/6) applicability
+  flag and a pass/fail check against a candidate schedule thickness — see
+  the worked example in `tests/test_pipe_design.py` showing schedule 40
+  passing the bare equation but *failing* once allowances are applied.
+- **ISO 14224 reliability taxonomy**: `src/machine_learning/iso14224.py`
+  — maps the predictive-maintenance ML demo onto the ISO 14224:2016
+  piping failure vocabulary (failure modes, failure mechanisms, detection
+  methods), exactly as a CMMS would record them. `annotate_anomaly_flags`
+  wraps Isolation Forest output in ISO 14224-labelled `AnomalyRecord`
+  objects; `classify_degradation_scenario` documents that the roughness-
+  degradation synthetic scenario represents FM=Reduced Flow /
+  mechanism=Fouling|Corrosion / detection=Condition Monitoring — giving
+  the ML results engineering meaning rather than opaque model output.
 - **Simulation layer**: config-driven scenarios (`configs/*.yaml`) — cross-
   referenced and validated by `src/simulation/config_loader.py`, so adding
   a scenario, pipe, or fluid means editing YAML, not Python — plus Monte
@@ -133,10 +152,10 @@ hydraulic-analysis/
 ├── src/
 │   ├── hydraulics/           # friction.py, swamee_jain.py, head_loss.py, pump.py,
 │   │                         # fluid_properties.py, npsh.py, electrical.py,
-│   │                         # network.py, transients.py
+│   │                         # network.py, transients.py, pipe_design.py
 │   ├── simulation/           # scenario.py, monte_carlo.py, sensitivity.py, config_loader.py
 │   ├── economics/            # lcca.py, scenario_economics.py
-│   ├── machine_learning/     # synthetic_data.py, degradation_model.py, anomaly_detection.py
+│   ├── machine_learning/     # synthetic_data.py, degradation_model.py, anomaly_detection.py, iso14224.py
 │   ├── auth/                 # models.py (User, Role), service.py (RBAC + bcrypt hashing)
 │   ├── audit/                # models.py, service.py (who/when/what logging)
 │   ├── geospatial/            # models.py, service.py (PostGIS CRUD), map_view.py (Folium)
@@ -344,6 +363,27 @@ result = evaluate_water_hammer(
 print(result.peak_pressure_Pa, result.is_rapid_closure)
 ```
 
+### Pipe wall thickness (ASME B31.3 pressure design)
+
+```python
+from src.hydraulics.pipe_design import evaluate_pipe_design
+from src.utils.validation import check_pipe_design_margin
+
+# NPS 6 (6.625" OD) carbon steel pipe, 1480 psig design pressure,
+# S=20,000 psi allowable stress — checking whether Schedule 40 (0.280")
+# is adequate once a corrosion allowance and mill under-tolerance apply.
+result = evaluate_pipe_design(
+    design_pressure_psig=1480, outside_diameter_in=6.625, allowable_stress_psi=20000,
+    corrosion_allowance_in=0.0625, selected_thickness_in=0.280,   # Schedule 40
+)
+print(result.pressure_design_thickness_in)   # 0.238 in — Eq. (3a), matches the ASME worked example
+print(result.selected_thickness_adequate)    # False — Sch 40 fails once allowances are applied
+print(check_pipe_design_margin(
+    result.derated_selected_thickness_in, result.minimum_required_thickness_in,
+    result.thin_wall_assumption_valid,
+))
+```
+
 ### Predictive maintenance (ML demo — synthetic data, read the caveats)
 
 ```python
@@ -483,6 +523,13 @@ EXTENSION postgis;`).
 - Swamee, P.K. & Jain, A.K. (1976). *Explicit equations for pipe flow
   problems.* J. Hydraul. Div., ASCE, 102(5), 657–664.
 - Bejan, A. (2016). *Advanced Engineering Thermodynamics.* Wiley — Gouy-Stodola theorem.
+- ASME B31.3-2022, *Process Piping* — Equation (3a), pressure design
+  thickness of straight pipe under internal pressure (paragraph 304.1.2,
+  Table 304.1.1).
+- ISO 14224:2016, *Petroleum, petrochemical and natural gas industries —
+  Collection and exchange of reliability and maintenance data for
+  equipment* — failure mode/mechanism taxonomy (§8.5–8.7) and piping
+  equipment boundary (Annex D).
 - SNI 03-6481-2000 / SNI 03-7065-2005 — Indonesian plumbing system standards.
 
 See `docs/design.md` for the full architecture rationale and `docs/user_guide.md`

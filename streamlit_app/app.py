@@ -44,6 +44,7 @@ You're signed in as a **{user.role.display_name}**.
 - **Lean Dashboard** — Muda (waste Pareto + ranking), Mura (utilization unevenness), and Muri (pump overburden) across all scenarios
 - **Economics** — CAPEX vs. OPEX lifecycle cost comparison (factual present-value arithmetic, not financial advice)
 - **Network Map** — the pipe network plotted on a real map, color-coded by hydraulic state
+- **Pipe Design** — ASME B31.3 Eq. (3a) wall-thickness pressure design, with an optional adequacy check against a candidate schedule
 - **Config Editor** — edit the YAML that drives every scenario *(Lead Engineer only)*
 - **Audit Log** — who ran what, when *(Lead Engineer only)*
 - **About** — background on the method and references

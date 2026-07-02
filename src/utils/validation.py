@@ -238,3 +238,61 @@ def check_water_hammer_risk(peak_pressure_Pa: float, pipe_rated_pressure_Pa: flo
             f"protection (e.g. slower valve closure, surge tanks, relief valves)."
         )
     return None
+
+
+# ── Pipe wall thickness (ASME B31.3 pressure design check) ───────────────
+def check_pipe_design_margin(
+    derated_selected_thickness_in: float | None,
+    minimum_required_thickness_in: float,
+    thin_wall_assumption_valid: bool = True,
+) -> str | None:
+    """Return a warning if a selected pipe wall thickness is inadequate or
+    has thin margin against the ASME B31.3 minimum required thickness
+    (t_m), or if the Eq. (3a) thin-wall assumption itself doesn't hold for
+    this design, or None if everything checks out.
+
+    Thresholds mirror ``check_npsh_margin``: below 100% of required is an
+    outright fail; under 120% is flagged as thin, since real wall
+    thickness also has to absorb manufacturing variation beyond the
+    mill's stated under-tolerance and any future re-rating.
+
+    Parameters
+    ----------
+    derated_selected_thickness_in : float | None
+        Candidate wall thickness after mill under-tolerance [in] (see
+        ``hydraulics.pipe_design.PipeDesignResult.derated_selected_thickness_in``).
+        None skips the margin check entirely (no candidate thickness was
+        supplied).
+    minimum_required_thickness_in : float
+        ASME B31.3 minimum required thickness, t_m [in] (see
+        ``hydraulics.pipe_design.PipeDesignResult.minimum_required_thickness_in``).
+    thin_wall_assumption_valid : bool
+        Whether Eq. (3a)'s thin-wall assumption (t < D/6) held for this
+        design (see
+        ``hydraulics.pipe_design.PipeDesignResult.thin_wall_assumption_valid``).
+    """
+    if not thin_wall_assumption_valid:
+        return (
+            "⚠️  ASME B31.3 Eq. (3a) thin-wall assumption (t < D/6) does not "
+            "hold for this design — the standard requires the thick-wall "
+            "relation (Eq. 3b) instead. Treat this result as approximate and "
+            "consult a more detailed analysis."
+        )
+    if derated_selected_thickness_in is None or minimum_required_thickness_in <= 0:
+        return None
+    ratio = derated_selected_thickness_in / minimum_required_thickness_in
+    if ratio < 1.0:
+        return (
+            f"⚠️  Selected wall thickness is undersized: {derated_selected_thickness_in:.4f} in "
+            f"after mill under-tolerance is below the ASME B31.3 minimum required "
+            f"thickness of {minimum_required_thickness_in:.4f} in ({ratio:.0%}). "
+            f"Select a heavier schedule."
+        )
+    if ratio < 1.2:
+        return (
+            f"⚠️  Thin margin: selected wall thickness clears the ASME B31.3 minimum "
+            f"required thickness by only {ratio:.0%} after mill under-tolerance "
+            f"({derated_selected_thickness_in:.4f} in vs {minimum_required_thickness_in:.4f} in "
+            f"required). Consider the next heavier schedule for headroom."
+        )
+    return None

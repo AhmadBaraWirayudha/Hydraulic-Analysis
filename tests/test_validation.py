@@ -14,6 +14,7 @@ from src.utils.validation import (
     check_npsh_margin,
     check_voltage_unbalance,
     check_water_hammer_risk,
+    check_pipe_design_margin,
 )
 from src.utils.constants import SNI_VELOCITY_MIN, SNI_VELOCITY_MAX
 
@@ -249,3 +250,41 @@ def test_check_water_hammer_risk_over_100_percent_warns_rupture_risk():
     warning = check_water_hammer_risk(1_200_000, 1_000_000)
     assert warning is not None
     assert "rupture" in warning.lower()
+
+
+# ── check_pipe_design_margin (ASME B31.3 pressure design check) ──────────
+def test_check_pipe_design_margin_returns_none_when_no_candidate():
+    assert check_pipe_design_margin(None, 0.238) is None
+
+
+def test_check_pipe_design_margin_comfortable_margin_returns_none():
+    assert check_pipe_design_margin(0.378, 0.238) is None
+
+
+def test_check_pipe_design_margin_below_required_warns_undersized():
+    warning = check_pipe_design_margin(0.175, 0.238)
+    assert warning is not None
+    assert "undersized" in warning.lower()
+
+
+def test_check_pipe_design_margin_thin_margin_warns_without_undersized_language():
+    warning = check_pipe_design_margin(0.2625, 0.238078)
+    assert warning is not None
+    assert "thin margin" in warning.lower()
+    assert "undersized" not in warning.lower()
+
+
+def test_check_pipe_design_margin_exactly_100_percent_is_not_undersized():
+    # Exactly meeting the minimum (ratio == 1.0) should not be flagged as
+    # undersized -- only strictly below.
+    warning = check_pipe_design_margin(0.238, 0.238)
+    assert warning is None or "undersized" not in warning.lower()
+
+
+def test_check_pipe_design_margin_thin_wall_invalid_overrides_everything():
+    """Even a comfortable margin shouldn't suppress the Eq. (3a)
+    applicability warning -- a result outside the thin-wall regime isn't
+    trustworthy regardless of margin."""
+    warning = check_pipe_design_margin(0.378, 0.238, thin_wall_assumption_valid=False)
+    assert warning is not None
+    assert "3b" in warning

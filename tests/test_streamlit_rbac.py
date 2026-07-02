@@ -19,7 +19,8 @@ from streamlit.testing.v1 import AppTest
 PROJECT_ROOT_PAGES = "streamlit_app/pages"
 
 VIEW_ONLY_PAGES = [
-    "2_compare", "3_results", "4_lean_dashboard", "5_economics", "6_network_map", "9_about",
+    "2_compare", "3_results", "4_lean_dashboard", "5_economics", "6_network_map",
+    "9_about", "10_pipe_design",
 ]
 LEAD_ENGINEER_ONLY_PAGES = ["1_input", "7_config_editor", "8_audit_log"]
 
@@ -324,3 +325,71 @@ def test_network_map_flags_imbalanced_external_flow(seeded_db):
 
     assert at.exception.len == 0
     assert any("must balance to ~0" in e.value for e in at.error)
+
+
+# ── Pipe Design: worked example renders correctly through the real page ────
+def test_pipe_design_default_matches_readme_worked_example(seeded_db):
+    """The page's defaults reproduce this project's README worked example.
+    Compute the expected result via the same library function used by the
+    page, then check the *rendered* metrics and warning match it — this
+    catches UI-wiring bugs (wrong parameter, wrong field in wrong slot,
+    stale formatting) that pipe_design.py's own unit tests can't, since
+    those never touch the Streamlit layer at all."""
+    from src.hydraulics.pipe_design import evaluate_pipe_design
+    from src.utils.validation import check_pipe_design_margin
+
+    expected = evaluate_pipe_design(
+        design_pressure_psig=1480.0,
+        outside_diameter_in=6.625,
+        allowable_stress_psi=20000.0,
+        corrosion_allowance_in=0.0625,
+        selected_thickness_in=0.280,
+    )
+    expected_warning = check_pipe_design_margin(
+        expected.derated_selected_thickness_in,
+        expected.minimum_required_thickness_in,
+        expected.thin_wall_assumption_valid,
+    )
+
+    at = AppTest.from_file(f"{PROJECT_ROOT_PAGES}/10_pipe_design.py")
+    at.default_timeout = 15
+    at = _login(at, "technician", "technician123")
+    assert at.exception.len == 0
+
+    # Independently confirms the textbook value from the README/module
+    # docstring, rendered through the real page rather than asserted
+    # against the function directly.
+    assert expected.pressure_design_thickness_in == pytest.approx(0.2381, abs=5e-5)
+
+    metric_values = [m.value for m in at.metric]
+    assert f"{expected.pressure_design_thickness_in:.4f} in" in metric_values
+    assert f"{expected.minimum_required_thickness_in:.4f} in" in metric_values
+    assert f"{expected.nominal_thickness_required_in:.4f} in" in metric_values
+
+    # Schedule 40 (the page's default candidate) is undersized once the
+    # corrosion allowance is applied — the interesting, documented result.
+    assert expected.selected_thickness_adequate is False
+    assert expected_warning is not None
+    # st.error() promotes a leading emoji into the alert's icon rather
+    # than keeping it in the text body, so .value omits it (confirmed by
+    # inspecting the rendered value directly) — strip it the same way
+    # before comparing.
+    expected_warning_text = expected_warning.split(None, 1)[1]
+    assert any(e.value == expected_warning_text for e in at.error)
+
+
+def test_pipe_design_unchecking_candidate_hides_adequacy_verdict(seeded_db):
+    """With the candidate-check box off, the page should show the three
+    build-up metrics but render no adequacy verdict (nothing to grade)."""
+    at = AppTest.from_file(f"{PROJECT_ROOT_PAGES}/10_pipe_design.py")
+    at.default_timeout = 15
+    at = _login(at, "engineer", "engineer123")
+
+    checkbox = next(cb for cb in at.sidebar.checkbox if "Check a specific schedule" in cb.label)
+    checkbox.set_value(False).run()
+
+    assert at.exception.len == 0
+    assert len(at.metric) == 3
+    assert len(at.error) == 0
+    assert len(at.warning) == 0
+    assert len(at.success) == 0

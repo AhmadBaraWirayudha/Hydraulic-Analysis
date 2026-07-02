@@ -123,16 +123,14 @@ ALTER TABLE network_nodes ADD COLUMN IF NOT EXISTS external_flow_m3s DOUBLE PREC
 
 
 def init_schema() -> None:
+    """Create all enterprise tables (and the PostGIS extension) if they
+    don't already exist, then apply any pending lightweight migrations
+    (new columns on existing tables). Idempotent — safe to call on every
+    app startup."""
     with get_connection() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT pg_advisory_lock(987654321);")
-            try:
-                cur.execute(SCHEMA_SQL)
-                cur.execute(MIGRATIONS_SQL)
-            finally:
-                cur.execute("SELECT pg_advisory_unlock(987654321);")
-
-        conn.commit()
+            cur.execute(SCHEMA_SQL)
+            cur.execute(MIGRATIONS_SQL)
 
 
 def reset_schema() -> None:
