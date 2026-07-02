@@ -286,6 +286,25 @@ section 8 mirrors this with the same underlying data.
   which is in fact correct for that idealized case (no elevation gain, no
   delivery pressure target), but becomes more informative once a real
   system's static head is supplied.
+- `hydraulics.pipe_design` implements ASME B31.3 Eq. (3a) only — the
+  thin-wall regime (t < D/6). If a design falls outside that regime,
+  `thin_wall_assumption_valid` is set `False` rather than silently
+  returning a number from the wrong equation; the standard's thick-wall
+  relation (Eq. 3b) isn't implemented. The Y/E/W defaults (0.4, 1.0, 1.0)
+  cover ferritic/austenitic steel at or below 900 F — by far the most
+  common case for water/process distribution piping — and the 12.5% mill
+  under-tolerance default is the commonly-cited seamless-pipe figure; both
+  are parameters, not hardcoded, for other materials/temperatures/product
+  specs. Deliberately **not** threaded into `PipeScenario`/`scenario.py`:
+  flow-hydraulics sizing (does this diameter deliver enough flow at
+  acceptable head loss?) and pressure-containment sizing (is this wall
+  thick enough to hold the design pressure?) are different engineering
+  questions with different inputs (OD/schedule/material vs. ID/roughness/
+  length), and `PipeScenario` doesn't currently model OD, schedule, or
+  material stress at all — folding them together would blur that
+  distinction rather than clarify it. It joins `network.py`,
+  `transients.py`, and `electrical.py` as a standalone, independently
+  composable analysis module instead.
 
 ## Extension points
 

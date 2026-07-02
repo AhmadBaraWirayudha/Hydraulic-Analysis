@@ -8,10 +8,10 @@ source .venv/bin/activate      # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-The pure analysis modules covered in sections 2-10 below work standalone
+The pure analysis modules covered in sections 2-11 below work standalone
 with no database. The Streamlit dashboard additionally needs PostgreSQL
 with PostGIS enabled — easiest via `docker compose up -d db`, or see
-[DEPLOYMENT.md](../DEPLOYMENT.md) for other options. Section 12 covers
+[DEPLOYMENT.md](../DEPLOYMENT.md) for other options. Section 13 covers
 running the dashboard itself.
 
 ## 2. Running a single scenario
@@ -296,7 +296,7 @@ This and a hand-crafted guess provably reach the *same* answer — see
 `tests/test_network.py::test_spanning_tree_and_hand_crafted_guess_converge_to_same_solution`,
 which solves the same network from both and checks the converged flows
 match to floating-point precision. The Network Map dashboard page
-(section 11 below) uses this directly, reading external flows from each
+(section 12 below) uses this directly, reading external flows from each
 node's persisted `external_flow_m3s` rather than any hardcoded pipe
 names — it works for whatever topology is actually stored, not just this
 project's one demo shape.
@@ -339,7 +339,73 @@ network design (especially many-loop systems) and critical water-hammer
 certification typically use dedicated software (EPANET, transient
 solvers using the method of characteristics) for production decisions.
 
-## 10. Predictive Maintenance (ML Demo)
+## 10. Pipe Wall Thickness (ASME B31.3 Pressure Design)
+
+`src/hydraulics/pipe_design.py` answers a different question from the rest
+of this toolkit: given a design pressure, is a pipe's *wall* thick enough
+to safely contain it? (Everything else here is about flow — does the
+diameter deliver enough water at acceptable head loss.)
+
+Start with the bare ASME B31.3 Equation (3a) result:
+
+```python
+from src.hydraulics.pipe_design import pressure_design_thickness
+
+# NPS 6 (6.625" OD) carbon steel, 1480 psig design pressure, S=20,000 psi
+# allowable stress -- the published ASME worked example.
+t = pressure_design_thickness(1480, 6.625, 20000)
+print(t)   # 0.238 in
+```
+
+That number alone isn't something to order, though — it has no allowance
+for corrosion, and no allowance for the pipe mill's own manufacturing
+under-tolerance. `evaluate_pipe_design` carries both forward and, given a
+candidate wall thickness (e.g. a standard schedule), checks whether it's
+actually adequate:
+
+```python
+from src.hydraulics.pipe_design import evaluate_pipe_design
+from src.utils.validation import check_pipe_design_margin
+
+result = evaluate_pipe_design(
+    design_pressure_psig=1480, outside_diameter_in=6.625, allowable_stress_psi=20000,
+    corrosion_allowance_in=0.0625,        # 1/16" -- representative for carbon steel in water service
+    selected_thickness_in=0.280,           # Schedule 40 actual wall
+)
+print(result.minimum_required_thickness_in)    # 0.301 in, after the corrosion allowance
+print(result.selected_thickness_adequate)      # False
+print(check_pipe_design_margin(
+    result.derated_selected_thickness_in, result.minimum_required_thickness_in,
+    result.thin_wall_assumption_valid,
+))
+```
+
+This is the demonstration worth sitting with: Schedule 40's bare 0.280"
+wall looks comfortably above the 0.238" Eq. (3a) figure, but once a
+realistic corrosion allowance and the mill's 12.5% manufacturing
+under-tolerance are both applied, it actually falls short — Schedule 80
+(0.432") is what the design pressure requires. Re-running with
+`selected_thickness_in=0.432` flips `selected_thickness_adequate` to
+`True`. This is the entire point of running the full
+`evaluate_pipe_design` workflow instead of stopping at the bare equation.
+
+`result.thin_wall_assumption_valid` flags whether Eq. (3a)'s underlying
+assumption (t < D/6) actually held for this design — if it didn't, the
+result is approximate and the standard's thick-wall relation (Eq. 3b,
+not implemented here) would be required instead;
+`check_pipe_design_margin` surfaces that as a warning too, overriding any
+margin-based message.
+
+**Caveat**: the default coefficients (Y=0.4, E=W=1.0) assume ferritic/
+austenitic steel at or below 900°F, by far the most common case for water
+distribution piping — pass your own values for other materials,
+temperatures, or weld joint types. Like the network and water-hammer
+tools above, this is a screening/preliminary-sizing calculation; final
+pipe specification on a real project should be checked by a licensed
+engineer against the actual ASME B31.3 edition in force and the pipe's
+actual mill certification.
+
+## 11. Predictive Maintenance (ML Demo)
 
 `src/machine_learning/` demonstrates two ML patterns for pipe predictive
 maintenance: degradation forecasting (regression) and anomaly detection.
@@ -402,7 +468,40 @@ including precision/recall evaluation against known injected anomalies
 (only possible here because this is synthetic, labeled data — real
 deployments rarely have a reliable ground truth).
 
-## 11. Enterprise Layer: RBAC, Audit Logging, Geospatial Network
+### ISO 14224 reliability taxonomy (labelling outputs for CMMS)
+
+`src/machine_learning/iso14224.py` maps the ML demo's outputs onto the
+ISO 14224:2016 piping failure vocabulary, making them legible to a
+Reliability Engineer and importable into a CMMS without ad-hoc label
+strings:
+
+```python
+from src.machine_learning.iso14224 import (
+    classify_degradation_scenario, annotate_anomaly_flags,
+)
+
+# What does the synthetic scenario actually represent?
+c = classify_degradation_scenario()
+print(c.failure_mode)           # "FLR" — Reduced flow capacity
+print(c.failure_mechanism_primary)  # "FOU" — Fouling/scaling
+print(c.detection_method)       # "CM"  — Condition monitoring
+
+# Wrap Isolation Forest flags in ISO 14224-labelled records
+records = annotate_anomaly_flags(iso_flags, detect_anomalies(model, features).anomaly_scores)
+for r in records:
+    if r.is_anomaly:
+        print(r.observation_index, r.failure_mode, r.failure_mechanism_candidate)
+        # e.g. 47  AIR  FOU  (Abnormal Instrument Reading, candidate: Fouling)
+```
+
+The failure-mode/mechanism codes are the ones from ISO 14224 Table 5–6;
+`DegradationScenarioClassification` is a frozen dataclass (read-only, not
+mutable state) so it can be safely passed around and logged.
+`annotate_anomaly_flags` accepts custom codes if your equipment or fluid
+chemistry suggests a different primary mechanism (e.g. `MECH_CORROSION`
+for carbon-steel pipe in aggressive service).
+
+## 12. Enterprise Layer: RBAC, Audit Logging, Geospatial Network
 
 Everything in this section needs a reachable PostgreSQL+PostGIS instance
 — start one with `docker compose up -d db`, or see
@@ -538,7 +637,7 @@ after simulated idle time. See `docs/design.md`'s "Enterprise Layer"
 section for two real bugs this style of testing caught that no amount of
 HTTP-status smoke testing could have.
 
-## 12. Loading scenarios from config files
+## 13. Loading scenarios from config files
 
 There are two levels of config support:
 
@@ -583,7 +682,7 @@ pipe or fluid key that doesn't exist in `pipe_config.yaml` /
 `fluid_config.yaml` raises a clear `ValueError` immediately, rather than
 failing deep inside a simulation run.
 
-## 13. Running the dashboard
+## 14. Running the dashboard
 
 Needs PostgreSQL+PostGIS reachable first (`docker compose up -d db`, or
 see [DEPLOYMENT.md](../DEPLOYMENT.md)):
@@ -621,7 +720,7 @@ scenarios:
     rated_power_W: 750.0   # undersized vs. ~992 W required -> overloaded warning
 ```
 
-## 14. Generating the PDF report
+## 15. Generating the PDF report
 
 ```bash
 python -m src.reporting.build_report
@@ -646,7 +745,7 @@ generate_report(
 )
 ```
 
-## 15. Running tests
+## 16. Running tests
 
 ```bash
 pytest --maxfail=1 --disable-warnings -q
